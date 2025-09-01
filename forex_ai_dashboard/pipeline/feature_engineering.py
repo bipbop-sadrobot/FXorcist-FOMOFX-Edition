@@ -187,11 +187,29 @@ class FeatureRegistry:
 class FeatureGenerator:
     """Generates and manages forex trading features."""
     
-    def __init__(self, random_state: int = 42):
+    def __init__(self, random_state: int = 42, experiment_name: str = "forex_feature_engineering"):
         self.registry = FeatureRegistry()
         self.feature_selector = FeatureSelector(random_state=random_state)
         self.synthetic_generator = SyntheticFeatureGenerator()
+        self.regime_detector = MarketRegimeDetector(random_state=random_state)
+        self.validator = DataValidator()
+        self.experiment_name = experiment_name
         self._register_base_features()
+        
+        # Set up MLflow experiment
+        mlflow.set_experiment(experiment_name)
+        
+    def normalize_timezone(self, df: pd.DataFrame, ts_col: str = 'timestamp') -> pd.DataFrame:
+        """Normalize timestamps to UTC."""
+        df = df.copy()
+        if ts_col in df.columns:
+            if not pd.api.types.is_datetime64_any_dtype(df[ts_col]):
+                df[ts_col] = pd.to_datetime(df[ts_col])
+            if df[ts_col].dt.tz is None:
+                df[ts_col] = df[ts_col].dt.tz_localize('UTC')
+            else:
+                df[ts_col] = df[ts_col].dt.tz_convert('UTC')
+        return df
     
     def _register_base_features(self):
         """Register basic price and volume features."""
@@ -223,22 +241,53 @@ class FeatureGenerator:
     def generate_features(
         self,
         df: pd.DataFrame,
-        feature_list: Optional[List[str]] = None
-    ) -> pd.DataFrame:
-        """Generate specified features, respecting dependencies."""
-        df = df.copy()
+        feature_list: Optional[List[str]] = None,
+        validate: bool = True
+    ) -> Tuple[pd.DataFrame, Dict]:
+        """Generate specified features with validation."""
+        df = self.normalize_timezone(df.copy())
+        validation_results = {}
         
-        # If no specific features requested, generate all registered features
+        if validate:
+            # Validate timestamps
+            ts_valid, ts_stats = self.validator.validate_timestamps(df)
+            validation_results['timestamp'] = ts_stats
+            if not ts_valid:
+                raise ValueError(f"Timestamp validation failed: {ts_stats['error']}")
+            
+            # Validate price data
+            price_valid, price_stats = self.validator.validate_price_data(df)
+            validation_results['price'] = price_stats
+            if not price_valid:
+                raise ValueError(f"Price validation failed: {price_stats['error']}")
+        
+        # Generate features with look-ahead prevention
         feature_list = feature_list or list(self.registry.features.keys())
-        
-        # Sort features by dependencies
         sorted_features = list(nx.topological_sort(self.registry.dependency_graph))
         features_to_generate = [f for f in sorted_features if f in feature_list]
         
         for feature in features_to_generate:
             df = self._generate_single_feature(df, feature)
+            
+        # Prevent look-ahead bias
+        df = self.validator.prevent_lookahead(df, window=1)
         
-        return df
+        # Final validation
+        if validate:
+            for col in df.columns:
+                if col not in ['timestamp', 'open', 'high', 'low', 'close', 'volume']:
+                    stats = df[col].agg(['mean', 'std', 'min', 'max']).to_dict()
+                    stats['missing'] = df[col].isnull().sum()
+                    stats['inf'] = np.isinf(df[col]).sum()
+                    validation_results[col] = stats
+                    
+                    # Check for data quality issues
+                    if stats['missing'] > len(df) * 0.1:  # More than 10% missing
+                        logger.warning(f"High missing values in {col}: {stats['missing']}")
+                    if stats['inf'] > 0:
+                        logger.warning(f"Infinite values in {col}: {stats['inf']}")
+        
+        return df, validation_results
     
     def _generate_single_feature(self, df: pd.DataFrame, feature_name: str) -> pd.DataFrame:
         """Generate a single feature with its dependencies."""
