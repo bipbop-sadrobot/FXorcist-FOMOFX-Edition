@@ -3,7 +3,8 @@ import numpy as np
 import logging
 from typing import Dict, List, Optional, Union, Callable, Tuple
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+import pytz
 import hashlib
 import json
 from dataclasses import dataclass, asdict
@@ -29,6 +30,87 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+class DataValidator:
+    """Validates data quality and prevents look-ahead bias."""
+    
+    def __init__(self):
+        self.validation_stats = {}
+    
+    def validate_timestamps(self, df: pd.DataFrame, ts_col: str = 'timestamp') -> Tuple[bool, Dict]:
+        """Validate timestamp consistency and timezone awareness."""
+        if ts_col not in df.columns:
+            return False, {"error": f"Missing timestamp column: {ts_col}"}
+            
+        # Convert to datetime if needed
+        if not pd.api.types.is_datetime64_any_dtype(df[ts_col]):
+            try:
+                df[ts_col] = pd.to_datetime(df[ts_col])
+            except Exception as e:
+                return False, {"error": f"Failed to parse timestamps: {str(e)}"}
+        
+        # Check timezone awareness
+        if df[ts_col].dt.tz is None:
+            return False, {"error": "Timestamps are not timezone-aware"}
+            
+        # Check for future dates
+        now = datetime.now(timezone.utc)
+        if any(df[ts_col] > now):
+            return False, {"error": "Found future timestamps"}
+            
+        # Check for gaps
+        gaps = df[ts_col].diff().dropna()
+        max_gap = gaps.max()
+        if max_gap > timedelta(hours=1):
+            return False, {"error": f"Found large time gap: {max_gap}"}
+            
+        return True, {
+            "start_time": df[ts_col].min(),
+            "end_time": df[ts_col].max(),
+            "avg_interval": gaps.mean()
+        }
+    
+    def validate_price_data(self, df: pd.DataFrame) -> Tuple[bool, Dict]:
+        """Validate price data quality."""
+        required_cols = ['open', 'high', 'low', 'close']
+        if not all(col in df.columns for col in required_cols):
+            return False, {"error": "Missing required price columns"}
+            
+        stats = {}
+        for col in required_cols:
+            series = df[col]
+            stats[col] = {
+                "missing": series.isnull().sum(),
+                "zeros": (series == 0).sum(),
+                "negative": (series < 0).sum(),
+                "mean": series.mean(),
+                "std": series.std()
+            }
+            
+            # Check for anomalies
+            if stats[col]["missing"] > len(df) * 0.01:  # More than 1% missing
+                return False, {"error": f"Too many missing values in {col}"}
+            if stats[col]["zeros"] > 0:
+                return False, {"error": f"Found zero prices in {col}"}
+            if stats[col]["negative"] > 0:
+                return False, {"error": f"Found negative prices in {col}"}
+                
+        return True, stats
+    
+    def prevent_lookahead(self, df: pd.DataFrame, window: int) -> pd.DataFrame:
+        """Prevent look-ahead bias in feature calculation."""
+        df = df.copy()
+        
+        # Sort by timestamp to ensure correct ordering
+        if 'timestamp' in df.columns:
+            df = df.sort_values('timestamp')
+        
+        # Shift features that use future data
+        for col in df.columns:
+            if any(x in col.lower() for x in ['future', 'forward', 'next']):
+                df[col] = df[col].shift(window)
+            
+        return df
 
 @dataclass
 class FeatureMetadata:
