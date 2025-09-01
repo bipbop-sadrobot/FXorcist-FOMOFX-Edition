@@ -12,6 +12,9 @@ from scipy import stats, fft
 import ta  # Technical Analysis library
 import shap
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from hmmlearn import hmm
 import pywt  # Wavelet transforms
 from boruta import BorutaPy
 
@@ -306,6 +309,79 @@ class FeatureSelector:
         
         return pd.DataFrame(results)
 
+class MarketRegimeDetector:
+    """Detects market regimes using various clustering methods."""
+    
+    def __init__(self, n_regimes: int = 3, method: str = 'hmm', random_state: int = 42):
+        self.n_regimes = n_regimes
+        self.method = method
+        self.random_state = random_state
+        self.model = None
+        self.scaler = StandardScaler()
+        
+    def _prepare_features(self, df: pd.DataFrame) -> np.ndarray:
+        """Prepare features for regime detection."""
+        features = []
+        
+        # Volatility
+        if 'returns' in df.columns:
+            vol = df['returns'].rolling(window=20).std()
+            features.append(vol)
+        
+        # Trading volume intensity
+        if 'volume' in df.columns and 'returns' in df.columns:
+            vol_intensity = (df['volume'] * np.abs(df['returns'])).rolling(window=20).mean()
+            features.append(vol_intensity)
+        
+        # Price momentum
+        if 'close' in df.columns:
+            momentum = df['close'].pct_change(20)
+            features.append(momentum)
+        
+        features_array = np.column_stack(features)
+        return self.scaler.fit_transform(features_array)
+    
+    def fit_predict(self, df: pd.DataFrame) -> np.ndarray:
+        """Fit the model and predict regimes."""
+        X = self._prepare_features(df)
+        
+        if self.method == 'kmeans':
+            self.model = KMeans(
+                n_clusters=self.n_regimes,
+                random_state=self.random_state
+            )
+            regimes = self.model.fit_predict(X)
+            
+        elif self.method == 'hmm':
+            self.model = hmm.GaussianHMM(
+                n_components=self.n_regimes,
+                random_state=self.random_state
+            )
+            self.model.fit(X)
+            regimes = self.model.predict(X)
+        
+        else:
+            raise ValueError(f"Unknown method: {self.method}")
+        
+        return regimes
+    
+    def get_regime_stats(self, df: pd.DataFrame, regimes: np.ndarray) -> pd.DataFrame:
+        """Calculate statistics for each regime."""
+        stats_dict = {}
+        
+        for regime in range(self.n_regimes):
+            mask = regimes == regime
+            regime_data = df[mask]
+            
+            stats_dict[f'regime_{regime}'] = {
+                'count': len(regime_data),
+                'avg_return': regime_data['returns'].mean() if 'returns' in df.columns else None,
+                'volatility': regime_data['returns'].std() if 'returns' in df.columns else None,
+                'avg_volume': regime_data['volume'].mean() if 'volume' in df.columns else None
+            }
+        
+        return pd.DataFrame.from_dict(stats_dict, orient='index')
+
 class SyntheticFeatureGenerator:
     """Generates synthetic features using various transforms."""
     
@@ -435,8 +511,50 @@ class SyntheticFeatureGenerator:
         
         return list(selected_features), combined_importance
 
+class FeatureGenerator:
+    """Generates and manages forex trading features."""
+    
+    def __init__(self, random_state: int = 42):
+        self.registry = FeatureRegistry()
+        self.feature_selector = FeatureSelector(random_state=random_state)
+        self.synthetic_generator = SyntheticFeatureGenerator()
+        self.regime_detector = MarketRegimeDetector(random_state=random_state)
+        self._register_base_features()
+    
+    def detect_market_regimes(
+        self,
+        df: pd.DataFrame,
+        n_regimes: int = 3,
+        method: str = 'hmm'
+    ) -> Tuple[np.ndarray, pd.DataFrame]:
+        """Detect market regimes and return regime labels and statistics."""
+        self.regime_detector = MarketRegimeDetector(
+            n_regimes=n_regimes,
+            method=method,
+            random_state=42
+        )
+        
+        regimes = self.regime_detector.fit_predict(df)
+        regime_stats = self.regime_detector.get_regime_stats(df, regimes)
+        
+        # Add regime labels to registry
+        self.registry.register_feature(
+            FeatureMetadata(
+                name='market_regime',
+                version='1.0.0',
+                description=f'Market regime labels using {method}',
+                dependencies=['returns', 'volume'],
+                parameters={'n_regimes': n_regimes, 'method': method},
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+                category='regime'
+            )
+        )
+        
+        return regimes, regime_stats
+
 if __name__ == "__main__":
-    # Example usage with new features
+    # Example usage with new features including regime detection
     try:
         # Load sample data
         df = pd.read_parquet('data/processed/ingested_forex_1min_aug2025.parquet')
@@ -446,6 +564,17 @@ if __name__ == "__main__":
         
         # Generate base features
         df_features = generator.generate_features(df)
+        
+        # Detect market regimes
+        regimes, regime_stats = generator.detect_market_regimes(
+            df_features,
+            n_regimes=3,
+            method='hmm'
+        )
+        df_features['market_regime'] = regimes
+        
+        logger.info("\nMarket Regime Statistics:")
+        logger.info(regime_stats)
         
         # Generate synthetic features
         target_col = 'returns'
@@ -472,7 +601,7 @@ if __name__ == "__main__":
         
         # Save features
         output_path = Path('data/features/forex_features_aug2025.parquet')
-        df_features[selected_features + [target_col]].to_parquet(output_path)
+        df_features[selected_features + [target_col, 'market_regime']].to_parquet(output_path)
         logger.info(f"\nFeatures saved to {output_path}")
         
     except Exception as e:
