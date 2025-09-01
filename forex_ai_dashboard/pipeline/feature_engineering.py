@@ -101,8 +101,10 @@ class FeatureRegistry:
 class FeatureGenerator:
     """Generates and manages forex trading features."""
     
-    def __init__(self):
+    def __init__(self, random_state: int = 42):
         self.registry = FeatureRegistry()
+        self.feature_selector = FeatureSelector(random_state=random_state)
+        self.synthetic_generator = SyntheticFeatureGenerator()
         self._register_base_features()
     
     def _register_base_features(self):
@@ -346,29 +348,131 @@ class SyntheticFeatureGenerator:
         
         return features
 
+    def generate_synthetic_features(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        methods: List[str] = ['fourier', 'wavelet']
+    ) -> pd.DataFrame:
+        """Generate synthetic features using various transforms."""
+        df = df.copy()
+        
+        if 'fourier' in methods:
+            # Generate Fourier features for the target and its transforms
+            fourier_features = self.synthetic_generator.generate_fourier_features(
+                df[target_col]
+            )
+            for col in fourier_features.columns:
+                df[col] = fourier_features[col]
+                self.registry.register_feature(
+                    FeatureMetadata(
+                        name=col,
+                        version='1.0.0',
+                        description=f'Fourier transform feature of {target_col}',
+                        dependencies=[target_col],
+                        parameters={'transform': 'fourier'},
+                        created_at=datetime.now(),
+                        updated_at=datetime.now(),
+                        category='synthetic'
+                    )
+                )
+        
+        if 'wavelet' in methods:
+            # Generate wavelet features
+            wavelet_features = self.synthetic_generator.generate_wavelet_features(
+                df[target_col]
+            )
+            for col in wavelet_features.columns:
+                df[col] = wavelet_features[col]
+                self.registry.register_feature(
+                    FeatureMetadata(
+                        name=col,
+                        version='1.0.0',
+                        description=f'Wavelet transform feature of {target_col}',
+                        dependencies=[target_col],
+                        parameters={'transform': 'wavelet'},
+                        created_at=datetime.now(),
+                        updated_at=datetime.now(),
+                        category='synthetic'
+                    )
+                )
+        
+        return df
+    
+    def select_important_features(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        feature_cols: List[str],
+        methods: List[str] = ['boruta', 'shap']
+    ) -> Tuple[List[str], pd.DataFrame]:
+        """Select important features using multiple methods."""
+        selected_features = set(feature_cols)
+        importance_scores = []
+        
+        if 'boruta' in methods:
+            boruta_selected = self.feature_selector.select_features_boruta(
+                df[feature_cols], df[target_col]
+            )
+            selected_features.intersection_update(boruta_selected)
+        
+        if 'shap' in methods:
+            importance_df = self.feature_selector.analyze_feature_importance(
+                df, target_col, feature_cols, method='shap'
+            )
+            importance_scores.append(importance_df)
+        
+        # Combine importance scores from different methods
+        if importance_scores:
+            combined_importance = pd.concat(importance_scores)
+            combined_importance = combined_importance.groupby('feature').agg({
+                'importance': 'mean',
+                'method': lambda x: ','.join(x),
+                'raw_score': 'mean'
+            }).reset_index()
+        else:
+            combined_importance = pd.DataFrame()
+        
+        return list(selected_features), combined_importance
+
 if __name__ == "__main__":
-    # Example usage
+    # Example usage with new features
     try:
         # Load sample data
         df = pd.read_parquet('data/processed/ingested_forex_1min_aug2025.parquet')
         
         # Initialize feature generator
-        generator = FeatureGenerator()
+        generator = FeatureGenerator(random_state=42)
         
-        # Generate features
+        # Generate base features
         df_features = generator.generate_features(df)
         
-        # Analyze feature importance
-        target = 'returns'
-        features = [col for col in df_features.columns if col != target]
-        importance = analyze_feature_importance(df_features, target, features)
+        # Generate synthetic features
+        target_col = 'returns'
+        df_features = generator.generate_synthetic_features(
+            df_features,
+            target_col=target_col,
+            methods=['fourier', 'wavelet']
+        )
+        
+        # Select important features
+        feature_cols = [col for col in df_features.columns if col != target_col]
+        selected_features, importance_df = generator.select_important_features(
+            df_features,
+            target_col=target_col,
+            feature_cols=feature_cols,
+            methods=['boruta', 'shap']
+        )
         
         logger.info("\nFeature Importance Analysis:")
-        logger.info(importance)
+        logger.info(importance_df)
+        
+        logger.info("\nSelected Features:")
+        logger.info(selected_features)
         
         # Save features
         output_path = Path('data/features/forex_features_aug2025.parquet')
-        df_features.to_parquet(output_path)
+        df_features[selected_features + [target_col]].to_parquet(output_path)
         logger.info(f"\nFeatures saved to {output_path}")
         
     except Exception as e:
