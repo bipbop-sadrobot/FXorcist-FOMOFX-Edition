@@ -169,29 +169,51 @@ class MemoryManager:
             time.sleep(interval_seconds)
 
     def _consolidate_once(self):
+        """Consolidate memory tiers and manage lifecycle."""
         with self._lock:
-            # simple dedupe by normalized text in STM -> move unique to LTM
+            # Process STM entries
             stm = list(self.tiers.get("stm", []))
             seen_text = set()
+            metrics = {'duplicates': 0, 'promoted': 0, 'quarantined': 0}
+            
             for e in reversed(stm):  # oldest first
                 key = (e.text or "").strip().lower()
+                
+                # Check for duplicates
                 if key in seen_text:
-                    # forget duplicate
+                    metrics['duplicates'] += 1
                     self.forget(id=e.id)
-                else:
-                    seen_text.add(key)
-                    # demote very old stm to ltm
-                    age = time.time() - e.ts
-                    if age > 3600:  # 1 hour threshold for demo
-                        e.tier = "ltm"
-                        self.tiers["ltm"].insert(0, e)
-                        try:
-                            self.tiers["stm"].remove(e)
-                        except ValueError:
-                            pass
-                        if self.store:
-                            self.store.save_entry(e)
-            # compact LTM size heuristics could be added here
+                    continue
+                
+                seen_text.add(key)
+                age = time.time() - e.ts
+                
+                # Check for anomalies
+                if e.metadata.get('confidence', 1.0) < 0.3 or e.metadata.get('error', 0) > 0.1:
+                    e.metadata['quarantined'] = True
+                    e.metadata['quarantine_reason'] = 'Low confidence or high error'
+                    metrics['quarantined'] += 1
+                    if self.store:
+                        self.store.save_entry(e)
+                    continue
+                
+                # Promote to LTM if old enough
+                if age > 3600:  # 1 hour threshold
+                    e.tier = "ltm"
+                    self.tiers["ltm"].insert(0, e)
+                    metrics['promoted'] += 1
+                    try:
+                        self.tiers["stm"].remove(e)
+                    except ValueError:
+                        pass
+                    if self.store:
+                        self.store.save_entry(e)
+            
+            # Manage LTM size
+            if len(self.tiers.get("ltm", [])) > self.max_stm * 2:
+                self.tiers["ltm"] = self.tiers["ltm"][:self.max_stm * 2]
+            
+            return metrics
 
 def analyze_memory_trends(
     memory_data: List[tuple[float, float]],
@@ -199,6 +221,22 @@ def analyze_memory_trends(
     window: int = 5,
     output_format: str = "dict"
 ) -> Dict[str, Any]:
+    """
+    Analyze memory usage trends and system health metrics.
+    
+    Args:
+        memory_data: List of (timestamp, usage) tuples
+        leak_threshold: Minimum slope for memory leak warning
+        window: Window size for trend analysis
+        output_format: Output format ("dict" or "json")
+        
+    Returns:
+        Dict with metrics including:
+        - Memory usage stats
+        - Trend analysis
+        - Health indicators
+        - Quarantine stats
+    """
     """
     Analyze memory usage trends from a list of (timestamp, usage) tuples.
 
@@ -275,15 +313,21 @@ def analyze_memory_trends(
     return report
 
 
-def generate_insights_report(trend_report: Dict[str, Any]) -> str:
+def generate_insights_report(
+    trend_report: Dict[str, Any],
+    include_metrics: bool = True,
+    include_health: bool = True
+) -> str:
     """
-    Format the memory trend analysis into a human-readable insights report.
+    Generate comprehensive memory system insights report.
 
     Args:
-        trend_report (Dict[str, Any]): Output from analyze_memory_trends().
+        trend_report: Output from analyze_memory_trends()
+        include_metrics: Include detailed metrics
+        include_health: Include health indicators
 
     Returns:
-        str: Human-readable report with key metrics and recommendations.
+        str: JSON report with metrics, health status, and recommendations
     """
     if not isinstance(trend_report, dict):
         raise ValueError("trend_report must be a dictionary.")
