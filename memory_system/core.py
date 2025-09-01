@@ -299,8 +299,6 @@ def analyze_memory_trends(
 
     return report
 
-    return report
-
 
 def generate_insights_report(
     trend_report: Dict[str, Any],
@@ -341,12 +339,20 @@ def generate_insights_report(
     else:
         report["recommendations"].append("Memory usage stable. No immediate actions required.")
 
+    # Add SHAP explanations if available
+    if include_metrics and "shap_values" in trend_report:
+        report["explanations"] = {
+            "shap_values": trend_report["shap_values"],
+            "interpretation": "SHAP values show feature importance for trend analysis"
+        }
+    
+    # Add health indicators
+    if include_health:
+        report["health_status"] = {
+            "memory_health": "critical" if trend_report["potential_memory_leak"] else 
+                           "warning" if trend_report["overall_trend"] == "upward" else 
+                           "good",
+            "last_checked": datetime.now().isoformat()
+        }
+    
     return json.dumps(report, indent=2)
-    # Add explainability using SHAP
-    # try:
-    #     X = np.array([timestamps, usages]).T
-    #     explainer = shap.Explainer(lambda x: np.poly1d([slope, mean_y - slope * mean_x])(x), X)
-    #     shap_values = explainer.shap_values(X)
-    #     report["shap_values"] = shap_values.tolist()
-    # except Exception as e:
-    #     print(f"SHAP explainability failed: {e}")
