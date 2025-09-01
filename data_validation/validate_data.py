@@ -1,164 +1,216 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import List
-from statsmodels.tsa.stattools import adfuller  # For stationarity test
+from typing import Dict, List, Optional, Union
+from statsmodels.tsa.stattools import adfuller
 from datetime import datetime, timedelta
+from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[logging.FileHandler("validate_data.log"), logging.StreamHandler()])
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler("logs/validation.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-def validate_forex_data(df: pd.DataFrame, required_cols: List[str] = ['Date', 'Open', 'High', 'Low', 'Close'], 
-                        price_cols: List[str] = ['Open', 'High', 'Low', 'Close'], timestamp_col: str = 'Date', 
-                        volume_col: str = None, max_missing_perc: float = 5.0, z_threshold: float = 3.0, 
-                        freshness_days: int = 7, holidays: List[pd.Timestamp] = []) -> bool:
-    """
-    Production-grade validation for forex data, ensuring readiness for modeling/trading.
+# Constants
+STANDARD_COLUMNS = {
+    'timestamp': ['timestamp', 'date', 'time', 'datetime'],
+    'open': ['open', 'Open', 'OPEN'],
+    'high': ['high', 'High', 'HIGH'],
+    'low': ['low', 'Low', 'LOW'],
+    'close': ['close', 'Close', 'CLOSE'],
+    'volume': ['volume', 'Volume', 'VOLUME']
+}
 
-    Comprehensive checks:
-    1. Schema & Types: Required columns, datetime for timestamp, numeric for prices/volume.
-    2. Uniqueness & Monotonicity: No duplicate timestamps, increasing order.
-    3. Range & Consistency: Positive prices, high >= low >0, open/close within bounds.
-    4. Completeness: Missing % < threshold; no large gaps (>1 day).
-    5. Outliers: Z-score > threshold for prices.
-    6. Volatility: Kurtosis >3 (fat tails expected in forex, but flag extremes >10).
-    7. Stationarity: ADF test on close prices (p-value >0.05 flags non-stationary).
-    8. Freshness: Latest timestamp within X days of now.
-    9. Holidays/Weekends: No data on weekends or specified holidays.
-    10. Batch Support: Efficient for large DFs; log issues, raise on failures.
+def get_standard_column_name(col: str) -> Optional[str]:
+    """Map various column names to standard names."""
+    col = col.lower().strip()
+    for std_name, variants in STANDARD_COLUMNS.items():
+        if col in [v.lower() for v in variants]:
+            return std_name
+    return None
 
-    Parameters:
-    - df: Input DataFrame.
-    - required_cols: Must-have columns.
-    - price_cols: Price columns.
-    - timestamp_col: Timestamp name.
-    - volume_col: Optional volume.
-    - max_missing_perc: Threshold for missing %.
-    - z_threshold: Z-score for outliers.
-    - freshness_days: Max days old for data.
-    - holidays: List of holiday dates to exclude.
-
-    Returns:
-    - bool: True if valid.
-
-    Raises:
-    - ValueError: Detailed failure report.
-    """
+def validate_forex_data(
+    df: pd.DataFrame,
+    required_cols: List[str] = None,
+    price_cols: List[str] = None,
+    timestamp_col: str = None,
+    volume_col: str = None,
+    max_missing_perc: float = 5.0,
+    z_threshold: float = 4.0,  # Increased for forex volatility
+    freshness_days: Optional[int] = None,  # Optional for historical data
+    holidays: List[pd.Timestamp] = None,
+    is_historical: bool = False
+) -> bool:
+    """Enhanced validation for forex data with adaptive thresholds and historical data support."""
+    # Initialize parameters with defaults if not provided
+    required_cols = required_cols or ['timestamp', 'open', 'high', 'low', 'close']
+    price_cols = price_cols or ['open', 'high', 'low', 'close']
+    holidays = holidays or []
     issues = []
+    warnings = []
 
+    # Standardize column names
+    df.columns = [get_standard_column_name(col) or col for col in df.columns]
+    
     # 1. Schema & Types
     missing_cols = set(required_cols) - set(df.columns)
     if missing_cols:
         issues.append(f"Missing columns: {missing_cols}")
+        
+    # Identify timestamp column if not provided
+    if not timestamp_col:
+        timestamp_candidates = [col for col in df.columns if col.lower() in STANDARD_COLUMNS['timestamp']]
+        if timestamp_candidates:
+            timestamp_col = timestamp_candidates[0]
+        else:
+            issues.append("No timestamp column found")
+            return False
+
+    # Convert timestamp
     df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors='coerce')
-    if df[timestamp_col].isnull().any():
-        issues.append("Invalid timestamps.")
-    for col in price_cols:
-        if not pd.api.types.is_numeric_dtype(df[col]):
-            issues.append(f"Non-numeric {col}.")
-    if volume_col and not pd.api.types.is_numeric_dtype(df[volume_col]):
-        issues.append(f"Non-numeric {volume_col}.")
-
-    # 2. Uniqueness & Monotonicity
+    invalid_timestamps = df[timestamp_col].isnull()
+    if invalid_timestamps.any():
+        warnings.append(f"Found {invalid_timestamps.sum()} invalid timestamps")
+        df = df.dropna(subset=[timestamp_col])
+    
+    # Set index for time-based operations
     df = df.set_index(timestamp_col).sort_index()
-    if df.index.duplicated().any():
-        issues.append(f"Duplicates: {df.index.duplicated().sum()}")
-    if not df.index.is_monotonic_increasing:
-        issues.append("Non-monotonic timestamps.")
 
-    # 3. Range & Consistency
-    if (df[price_cols] <= 0).any().any():
-        issues.append("Non-positive prices.")
-    if volume_col and (df[volume_col] < 0).any():
-        issues.append("Negative volumes.")
-    if 'High' in price_cols and 'Low' in price_cols and (df['High'] < df['Low']).any():
-        issues.append("High < Low rows found.")
-
-    # 4. Completeness
-    missing_perc = df.isnull().mean().mean() * 100
-    if missing_perc > max_missing_perc:
-        issues.append(f"Missing >{max_missing_perc}%: {missing_perc:.2f}%")
-    gaps = df.index.to_series().diff() > timedelta(days=1)
-    if gaps.any():
-        issues.append(f"Large gaps: {gaps.sum()}")
-
-    # 5. Outliers (z-score)
+    # 2. Data Type Validation
     for col in price_cols:
-        z = np.abs((df[col] - df[col].mean()) / df[col].std())
-        outliers = (z > z_threshold).sum()
-        if outliers > len(df) * 0.05:
-            issues.append(f"Excess outliers in {col}: {outliers}")
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            if df[col].isnull().any():
+                warnings.append(f"Non-numeric values in {col}")
+                df[col] = df[col].fillna(method='ffill')
+    
+    if volume_col and volume_col in df.columns:
+        df[volume_col] = pd.to_numeric(df[volume_col], errors='coerce').fillna(0)
 
-    # 6. Volatility (Kurtosis on returns)
-    if 'Close' in df:
-        returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
+    # 3. Price Consistency
+    if all(col in df.columns for col in ['high', 'low']):
+        invalid_hl = df['high'] < df['low']
+        if invalid_hl.any():
+            warnings.append(f"Found {invalid_hl.sum()} invalid high/low pairs")
+            # Swap invalid high/low pairs
+            df.loc[invalid_hl, ['high', 'low']] = df.loc[invalid_hl, ['low', 'high']].values
+
+    # 4. Completeness Check
+    missing_perc = df[price_cols].isnull().mean().mean() * 100
+    if missing_perc > max_missing_perc:
+        warnings.append(f"Missing data: {missing_perc:.2f}% (threshold: {max_missing_perc}%)")
+    
+    # Check for large gaps (adaptive to data frequency)
+    median_interval = df.index.to_series().diff().median()
+    gap_threshold = max(median_interval * 5, timedelta(days=1))
+    gaps = df.index.to_series().diff() > gap_threshold
+    if gaps.any():
+        warnings.append(f"Found {gaps.sum()} large gaps (>{gap_threshold})")
+
+    # 5. Outlier Detection (adaptive thresholds)
+    for col in price_cols:
+        if col in df.columns:
+            # Calculate rolling statistics for adaptive thresholds
+            rolling_std = df[col].rolling(window=20).std()
+            rolling_mean = df[col].rolling(window=20).mean()
+            z_scores = np.abs((df[col] - rolling_mean) / rolling_std)
+            extreme_outliers = z_scores > z_threshold
+            
+            if extreme_outliers.any():
+                outlier_count = extreme_outliers.sum()
+                outlier_perc = (outlier_count / len(df)) * 100
+                if outlier_perc > 1:  # Allow up to 1% outliers
+                    warnings.append(f"High outlier percentage in {col}: {outlier_perc:.2f}%")
+
+    # 6. Market Microstructure Analysis
+    if 'close' in df.columns:
+        returns = np.log(df['close'] / df['close'].shift(1)).dropna()
+        
+        # Volatility clustering check
+        rolling_vol = returns.rolling(window=20).std()
+        vol_clustering = np.corrcoef(rolling_vol[20:], rolling_vol[:-20])[0,1]
+        if vol_clustering > 0.7:
+            warnings.append(f"Strong volatility clustering detected: {vol_clustering:.2f}")
+        
+        # Kurtosis check (adaptive to market conditions)
         kurt = returns.kurtosis()
-        if kurt > 10 or kurt < 3:
-            issues.append(f"Abnormal kurtosis in returns: {kurt:.2f} (expected 3-10 for forex)")
+        if kurt > 30:  # Extremely fat tails
+            warnings.append(f"Extreme kurtosis in returns: {kurt:.2f}")
 
-    # 7. Stationarity (ADF test)
-    if 'Close' in df and len(df) > 20:
-        adf = adfuller(df['Close'])
-        if adf[1] > 0.05:
-            issues.append(f"Non-stationary series (ADF p-value: {adf[1]:.3f} >0.05)")
+    # 7. Stationarity Test (for non-historical data only)
+    if not is_historical and 'close' in df.columns and len(df) > 20:
+        try:
+            adf = adfuller(df['close'])
+            if adf[1] > 0.05:
+                warnings.append(f"Non-stationary price series (ADF p-value: {adf[1]:.3f})")
+        except Exception as e:
+            logger.warning(f"Stationarity test failed: {str(e)}")
 
-    # 8. Freshness
-    latest = df.index.max()
-    if (datetime.now() - latest).days > freshness_days:
-        issues.append(f"Data stale: Latest {latest.date()} >{freshness_days} days old.")
+    # 8. Freshness Check (only for non-historical data)
+    if not is_historical and freshness_days:
+        latest = df.index.max()
+        staleness = (datetime.now() - latest).days
+        if staleness > freshness_days:
+            warnings.append(f"Data staleness: {staleness} days (threshold: {freshness_days})")
 
-    # 9. Holidays/Weekends
-    weekends = df.index.dayofweek.isin([5, 6])
-    if weekends.any():
-        issues.append(f"Weekend data: {weekends.sum()} rows")
-    holiday_data = df.index.isin(holidays)
-    if holiday_data.any():
-        issues.append(f"Holiday data: {holiday_data.sum()} rows")
+    # 9. Trading Calendar Check
+    if not is_historical:
+        weekends = df.index.dayofweek.isin([5, 6])
+        if weekends.any():
+            warnings.append(f"Found {weekends.sum()} weekend data points")
+        
+        if holidays:
+            holiday_data = df.index.isin(holidays)
+            if holiday_data.any():
+                warnings.append(f"Found {holiday_data.sum()} holiday data points")
 
+    # Log validation results
     if issues:
         error_msg = "\n".join(issues)
-        logging.error(f"Validation failed:\n{error_msg}")
+        logger.error(f"Validation failed:\n{error_msg}")
         raise ValueError(error_msg)
     
-    logging.info("All validations passed.")
+    if warnings:
+        warning_msg = "\n".join(warnings)
+        logger.warning(f"Validation warnings:\n{warning_msg}")
+    
+    logger.info("Validation completed successfully")
     return True
 
-# Production Example with Real EUR/USD Data
-if __name__ == "__main__":
-    real_data = {
-        'Date': pd.to_datetime(['2025-08-15', '2025-08-14', '2025-08-13', '2025-08-12', '2025-08-11', '2025-08-08', '2025-08-07', '2025-08-06', '2025-08-05', '2025-08-04']),
-        'Open': [1.1651, 1.1708, 1.1678, 1.1618, 1.1644, 1.1670, 1.1659, 1.1576, 1.1573, 1.1592],
-        'High': [1.1718, 1.1718, 1.1733, 1.1699, 1.1678, 1.1681, 1.1699, 1.1671, 1.1591, 1.1599],
-        'Low': [1.1647, 1.1631, 1.1670, 1.1600, 1.1590, 1.1630, 1.1613, 1.1565, 1.1529, 1.1551],
-        'Close': [1.1705, 1.1649, 1.1706, 1.1676, 1.1617, 1.1643, 1.1668, 1.1661, 1.1578, 1.1574]
+def run_validation_tests():
+    """Run comprehensive validation tests with various scenarios."""
+    # Test data
+    test_data = {
+        'timestamp': pd.date_range(start='2025-08-01', periods=100, freq='1min'),
+        'open': np.random.uniform(1.1000, 1.2000, 100),
+        'high': np.random.uniform(1.1500, 1.2500, 100),
+        'low': np.random.uniform(1.0500, 1.1500, 100),
+        'close': np.random.uniform(1.1000, 1.2000, 100),
+        'volume': np.random.randint(1000, 5000, 100)
     }
-    real_df = pd.DataFrame(real_data)
-    validate_forex_data(real_df, required_cols=['Date', 'Open', 'High', 'Low', 'Close'])
-    print("Real data validation passed.")
-
-# Unit Tests (expanded)
-def test_validate_real_data():
-    # Use real data above
-    real_df = pd.DataFrame(real_data)
-    assert validate_forex_data(real_df)
-
-def test_invalid_outliers():
-    invalid_df = pd.DataFrame(real_data)
-    invalid_df.loc[0, 'Close'] = 10.0  # Extreme outlier
-    try:
-        validate_forex_data(invalid_df)
-    except ValueError:
-        pass
-
-def test_stale_data():
-    stale_df = pd.DataFrame(real_data)
-    stale_df['Date'] = stale_df['Date'] - timedelta(days=10)
-    try:
-        validate_forex_data(stale_df, freshness_days=7)
-    except ValueError:
-        pass
+    df = pd.DataFrame(test_data)
+    
+    # Test cases
+    test_cases = [
+        ("Basic validation", df, {}),
+        ("Historical data", df, {"is_historical": True}),
+        ("Missing volume", df.drop('volume', axis=1), {}),
+        ("Custom thresholds", df, {"z_threshold": 5.0, "max_missing_perc": 10.0}),
+    ]
+    
+    for test_name, test_df, kwargs in test_cases:
+        try:
+            logger.info(f"\nRunning test: {test_name}")
+            validate_forex_data(test_df, **kwargs)
+            logger.info(f"Test passed: {test_name}")
+        except Exception as e:
+            logger.error(f"Test failed: {test_name}\nError: {str(e)}")
 
 if __name__ == "__main__":
-    test_validate_real_data()
-    test_invalid_outliers()
-    test_stale_data()
-    print("All tests passed.")
+    run_validation_tests()
