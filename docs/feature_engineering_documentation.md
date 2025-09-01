@@ -1,210 +1,202 @@
-# Feature Engineering System Documentation
+# Feature Engineering Documentation
 
 ## Overview
 
-The feature engineering system is designed to provide a robust, maintainable, and version-controlled approach to generating and managing features for the forex trading AI pipeline. The system handles feature dependencies, tracks feature metadata, and provides tools for analyzing feature importance.
+The feature engineering pipeline provides comprehensive capabilities for generating, selecting, and managing features for forex trading. It includes automated feature selection, synthetic feature generation, market regime detection, and experiment tracking.
 
-## Core Components
+## Key Components
 
-### 1. FeatureRegistry
+### 1. Feature Generation
 
-Manages feature versioning and dependencies:
-- Stores feature metadata
-- Tracks feature versions
-- Manages dependency relationships
-- Persists registry state to disk
-- Provides dependency resolution
+The `FeatureGenerator` class manages the overall feature engineering process, including:
 
-### 2. FeatureGenerator
+- Basic price features (returns, volatility)
+- Technical indicators (RSI, Bollinger Bands)
+- Volume-based features
+- Market microstructure features (spreads, gaps)
+- Synthetic features (Fourier, wavelet transforms)
+- Market regime labels
 
-Generates features with built-in safeguards:
-- Respects feature dependencies
-- Handles missing data
-- Provides error recovery
-- Updates feature statistics
-- Supports incremental updates
+### 2. Automated Feature Selection
 
-## Feature Categories
+Multiple methods are available for feature selection:
 
-### Basic Price Features
-- `returns`: Log returns of close prices
-- `volatility`: Rolling volatility (configurable window)
-- `spread`: High-low spread
-
-### Technical Indicators
-- RSI (Relative Strength Index)
-  - Multiple timeframes supported (e.g., rsi_14, rsi_28)
-- Bollinger Bands
-  - Upper/lower bands
-  - Percentage bandwidth
-  - Multiple timeframes
-
-### Volume-Based Features
-- `volume_intensity`: Volume weighted by return magnitude
-- Volume trends and patterns
-- Abnormal volume detection
-
-### Market Microstructure
-- Price gaps (up/down)
-- Trading intensity
-- Volatility clustering
-
-## Feature Metadata
-
-Each feature includes:
-```json
-{
-    "name": "feature_name",
-    "version": "1.0.0",
-    "description": "Feature description",
-    "dependencies": ["list", "of", "dependencies"],
-    "parameters": {
-        "param1": "value1",
-        "param2": "value2"
-    },
-    "created_at": "timestamp",
-    "updated_at": "timestamp",
-    "category": "feature_category",
-    "statistics": {
-        "mean": 0.0,
-        "std": 1.0,
-        "skew": 0.0,
-        "kurtosis": 3.0,
-        "missing_pct": 0.0
-    }
-}
-```
-
-## Usage Examples
-
-### 1. Basic Feature Generation
+#### Boruta Algorithm
 ```python
-generator = FeatureGenerator()
-df_features = generator.generate_features(df)
-```
-
-### 2. Specific Feature Generation
-```python
-features = ['returns', 'volatility', 'rsi_14']
-df_features = generator.generate_features(df, feature_list=features)
-```
-
-### 3. Feature Importance Analysis
-```python
-importance = analyze_feature_importance(
-    df_features,
-    target_col='returns',
-    feature_cols=features,
-    method='correlation'
+selected_features, _ = generator.select_important_features(
+    df, target_col='returns', methods=['boruta']
 )
 ```
 
-## Feature Dependencies
-
-Dependencies are managed automatically:
-1. Direct dependencies: Features directly required
-2. Indirect dependencies: Dependencies of dependencies
-3. Circular dependency detection
-4. Missing dependency handling
-
-Example dependency chain:
-```
-returns → volatility → volatility_bands
-     ↘ → rsi_14 → rsi_signals
+#### SHAP-based Selection
+```python
+selected_features, importance_df = generator.select_important_features(
+    df, target_col='returns', methods=['shap']
+)
 ```
 
-## Feature Statistics Monitoring
+### 3. Synthetic Feature Generation
 
-The system tracks key statistics for each feature:
-- Mean and standard deviation
-- Skewness and kurtosis
-- Missing value percentage
-- Update frequency
+Two types of transforms are supported:
 
-These statistics help identify:
-- Data drift
-- Feature stability
-- Data quality issues
-- Anomalous patterns
+#### Fourier Transform Features
+- Captures frequency components
+- Useful for identifying cycles
+```python
+df_features = generator.generate_synthetic_features(
+    df, target_col='returns', methods=['fourier']
+)
+```
+
+#### Wavelet Transform Features
+- Multi-scale decomposition
+- Captures both frequency and time information
+```python
+df_features = generator.generate_synthetic_features(
+    df, target_col='returns', methods=['wavelet']
+)
+```
+
+### 4. Market Regime Detection
+
+Two clustering methods are available:
+
+#### Hidden Markov Model (HMM)
+```python
+regimes, stats = generator.detect_market_regimes(
+    df, n_regimes=3, method='hmm'
+)
+```
+
+#### K-means Clustering
+```python
+regimes, stats = generator.detect_market_regimes(
+    df, n_regimes=3, method='kmeans'
+)
+```
+
+### 5. Feature Registry
+
+The `FeatureRegistry` maintains metadata about features:
+- Dependencies
+- Version history
+- Statistics
+- Parameters
+
+### 6. Experiment Tracking
+
+MLflow integration provides:
+- Parameter logging
+- Metric tracking
+- Nested runs for different components
+- Feature importance visualization
+
+## Usage Examples
+
+### Complete Pipeline
+
+```python
+# Initialize generator
+generator = FeatureGenerator(
+    random_state=42,
+    experiment_name="forex_feature_engineering"
+)
+
+# Generate base features
+df_features = generator.generate_features(df)
+
+# Detect market regimes
+regimes, regime_stats = generator.detect_market_regimes(
+    df_features,
+    n_regimes=3,
+    method='hmm'
+)
+df_features['market_regime'] = regimes
+
+# Generate synthetic features
+df_features = generator.generate_synthetic_features(
+    df_features,
+    target_col='returns',
+    methods=['fourier', 'wavelet']
+)
+
+# Select important features
+feature_cols = [col for col in df_features.columns if col != 'returns']
+selected_features, importance_df = generator.select_important_features(
+    df_features,
+    target_col='returns',
+    feature_cols=feature_cols,
+    methods=['boruta', 'shap']
+)
+```
 
 ## Best Practices
 
-1. Feature Development
-   - Document feature logic and assumptions
-   - Include unit tests for new features
-   - Validate feature quality metrics
-   - Check for multicollinearity
+1. **Feature Selection**
+   - Use multiple methods (Boruta + SHAP)
+   - Review feature importance scores
+   - Consider domain knowledge
 
-2. Version Control
-   - Use semantic versioning for features
-   - Document breaking changes
-   - Maintain backward compatibility when possible
-   - Archive deprecated features
+2. **Synthetic Features**
+   - Start with basic transforms
+   - Monitor for overfitting
+   - Validate on out-of-sample data
 
-3. Performance
-   - Use chunked processing for large datasets
-   - Implement caching for expensive features
-   - Monitor memory usage
-   - Profile feature generation time
+3. **Market Regimes**
+   - Test different numbers of regimes
+   - Compare HMM vs k-means results
+   - Validate regime transitions
 
-4. Monitoring
-   - Track feature statistics over time
-   - Monitor feature importance stability
-   - Check for data quality issues
-   - Validate feature relationships
+4. **Experiment Tracking**
+   - Use meaningful experiment names
+   - Log all relevant parameters
+   - Track feature importance over time
 
-## Error Handling
+## Monitoring and Maintenance
 
-The system implements robust error handling:
-1. Missing data management
-2. Invalid calculation handling
-3. Dependency resolution errors
-4. Version conflicts
-5. Storage/retrieval issues
+1. **Feature Statistics**
+   - Monitor for distribution shifts
+   - Track missing values
+   - Review feature correlations
+
+2. **Regime Changes**
+   - Monitor regime transition frequencies
+   - Review regime characteristics
+   - Validate regime persistence
+
+3. **Performance Metrics**
+   - Track feature importance stability
+   - Monitor synthetic feature quality
+   - Review selection consistency
 
 ## Future Enhancements
 
-Planned improvements:
-1. Feature selection automation
-2. Advanced importance analysis (SHAP, mutual information)
-3. Feature store integration
-4. Real-time feature generation
-5. GPU acceleration for compute-intensive features
-
-## Integration Points
-
-The feature engineering system integrates with:
-1. Data ingestion pipeline
-2. Validation system
-3. Model training pipeline
-4. Monitoring dashboard
+1. Additional feature selection methods
+2. More synthetic feature types
+3. Advanced regime detection algorithms
+4. Enhanced visualization capabilities
+5. Automated feature validation
 
 ## Troubleshooting
 
 Common issues and solutions:
-1. Missing dependencies
-2. Feature generation errors
-3. Performance bottlenecks
-4. Version conflicts
-5. Data quality issues
 
-## API Reference
+1. **Missing Data**
+   - Check data preprocessing
+   - Review feature dependencies
+   - Validate data quality
 
-### FeatureRegistry
-```python
-registry = FeatureRegistry()
-registry.register_feature(metadata)
-registry.get_feature_dependencies(feature_name)
-registry.get_dependent_features(feature_name)
-```
+2. **Feature Selection**
+   - Verify input data quality
+   - Check for multicollinearity
+   - Review selection parameters
 
-### FeatureGenerator
-```python
-generator = FeatureGenerator()
-generator.generate_features(df, feature_list)
-generator._generate_single_feature(df, feature_name)
-```
+3. **Market Regimes**
+   - Validate regime stability
+   - Check feature preparation
+   - Review model parameters
 
-### Feature Analysis
-```python
-analyze_feature_importance(df, target, features, method)
+4. **Experiment Tracking**
+   - Verify MLflow connection
+   - Check logging permissions
+   - Review run hierarchy
