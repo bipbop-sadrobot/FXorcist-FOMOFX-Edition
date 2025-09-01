@@ -17,6 +17,7 @@ from sklearn.preprocessing import StandardScaler
 from hmmlearn import hmm
 import pywt  # Wavelet transforms
 from boruta import BorutaPy
+import mlflow
 
 # Configure logging
 logging.basicConfig(
@@ -514,12 +515,16 @@ class SyntheticFeatureGenerator:
 class FeatureGenerator:
     """Generates and manages forex trading features."""
     
-    def __init__(self, random_state: int = 42):
+    def __init__(self, random_state: int = 42, experiment_name: str = "forex_feature_engineering"):
         self.registry = FeatureRegistry()
         self.feature_selector = FeatureSelector(random_state=random_state)
         self.synthetic_generator = SyntheticFeatureGenerator()
         self.regime_detector = MarketRegimeDetector(random_state=random_state)
+        self.experiment_name = experiment_name
         self._register_base_features()
+        
+        # Set up MLflow experiment
+        mlflow.set_experiment(experiment_name)
     
     def detect_market_regimes(
         self,
@@ -527,6 +532,43 @@ class FeatureGenerator:
         n_regimes: int = 3,
         method: str = 'hmm'
     ) -> Tuple[np.ndarray, pd.DataFrame]:
+        """Detect market regimes and return regime labels and statistics."""
+        with mlflow.start_run(nested=True) as run:
+            mlflow.log_params({
+                'n_regimes': n_regimes,
+                'method': method
+            })
+            
+            self.regime_detector = MarketRegimeDetector(
+                n_regimes=n_regimes,
+                method=method,
+                random_state=42
+            )
+            
+            regimes = self.regime_detector.fit_predict(df)
+            regime_stats = self.regime_detector.get_regime_stats(df, regimes)
+            
+            # Log regime statistics
+            for regime in range(n_regimes):
+                stats = regime_stats.loc[f'regime_{regime}'].to_dict()
+                for stat_name, value in stats.items():
+                    mlflow.log_metric(f'regime_{regime}_{stat_name}', value)
+            
+            # Add regime labels to registry
+            self.registry.register_feature(
+                FeatureMetadata(
+                    name='market_regime',
+                    version='1.0.0',
+                    description=f'Market regime labels using {method}',
+                    dependencies=['returns', 'volume'],
+                    parameters={'n_regimes': n_regimes, 'method': method},
+                    created_at=datetime.now(),
+                    updated_at=datetime.now(),
+                    category='regime'
+                )
+            )
+            
+            return regimes, regime_stats
         """Detect market regimes and return regime labels and statistics."""
         self.regime_detector = MarketRegimeDetector(
             n_regimes=n_regimes,
@@ -552,6 +594,125 @@ class FeatureGenerator:
         )
         
         return regimes, regime_stats
+
+    def generate_synthetic_features(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        methods: List[str] = ['fourier', 'wavelet']
+    ) -> pd.DataFrame:
+        """Generate synthetic features using various transforms."""
+        with mlflow.start_run(nested=True) as run:
+            mlflow.log_params({
+                'target_col': target_col,
+                'methods': methods
+            })
+            
+            df = df.copy()
+            initial_cols = set(df.columns)
+            
+            if 'fourier' in methods:
+                fourier_features = self.synthetic_generator.generate_fourier_features(
+                    df[target_col]
+                )
+                for col in fourier_features.columns:
+                    df[col] = fourier_features[col]
+                    self.registry.register_feature(
+                        FeatureMetadata(
+                            name=col,
+                            version='1.0.0',
+                            description=f'Fourier transform feature of {target_col}',
+                            dependencies=[target_col],
+                            parameters={'transform': 'fourier'},
+                            created_at=datetime.now(),
+                            updated_at=datetime.now(),
+                            category='synthetic'
+                        )
+                    )
+            
+            if 'wavelet' in methods:
+                wavelet_features = self.synthetic_generator.generate_wavelet_features(
+                    df[target_col]
+                )
+                for col in wavelet_features.columns:
+                    df[col] = wavelet_features[col]
+                    self.registry.register_feature(
+                        FeatureMetadata(
+                            name=col,
+                            version='1.0.0',
+                            description=f'Wavelet transform feature of {target_col}',
+                            dependencies=[target_col],
+                            parameters={'transform': 'wavelet'},
+                            created_at=datetime.now(),
+                            updated_at=datetime.now(),
+                            category='synthetic'
+                        )
+                    )
+            
+            # Log metrics about generated features
+            new_features = set(df.columns) - initial_cols
+            mlflow.log_metrics({
+                'n_fourier_features': len([col for col in new_features if 'fourier' in col]),
+                'n_wavelet_features': len([col for col in new_features if 'wavelet' in col])
+            })
+            
+            return df
+    
+    def select_important_features(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        feature_cols: List[str],
+        methods: List[str] = ['boruta', 'shap']
+    ) -> Tuple[List[str], pd.DataFrame]:
+        """Select important features using multiple methods."""
+        with mlflow.start_run(nested=True) as run:
+            mlflow.log_params({
+                'target_col': target_col,
+                'n_initial_features': len(feature_cols),
+                'methods': methods
+            })
+            
+            selected_features = set(feature_cols)
+            importance_scores = []
+            
+            if 'boruta' in methods:
+                boruta_selected = self.feature_selector.select_features_boruta(
+                    df[feature_cols], df[target_col]
+                )
+                selected_features.intersection_update(boruta_selected)
+                mlflow.log_metric('n_boruta_selected', len(boruta_selected))
+            
+            if 'shap' in methods:
+                importance_df = self.feature_selector.analyze_feature_importance(
+                    df, target_col, feature_cols, method='shap'
+                )
+                importance_scores.append(importance_df)
+                
+                # Log top SHAP features
+                top_shap = importance_df[importance_df['method'] == 'shap'].nlargest(
+                    5, 'importance'
+                )
+                for _, row in top_shap.iterrows():
+                    mlflow.log_metric(
+                        f'shap_importance_{row["feature"]}',
+                        row['importance']
+                    )
+            
+            # Combine importance scores
+            if importance_scores:
+                combined_importance = pd.concat(importance_scores)
+                combined_importance = combined_importance.groupby('feature').agg({
+                    'importance': 'mean',
+                    'method': lambda x: ','.join(x),
+                    'raw_score': 'mean'
+                }).reset_index()
+            else:
+                combined_importance = pd.DataFrame()
+            
+            mlflow.log_metric('n_selected_features', len(selected_features))
+            
+            return list(selected_features), combined_importance
 
 if __name__ == "__main__":
     # Example usage with new features including regime detection
