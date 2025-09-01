@@ -1,19 +1,26 @@
+"""
+Main dashboard application for the Forex AI monitoring system.
+Implements a modular, tab-based interface with comprehensive trading analytics.
+"""
+
 import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from pathlib import Path
-from datetime import datetime, timedelta
-import json
 import logging
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import sys
+from pathlib import Path
 
 # Add project root to path
 sys.path.append('..')
+
 from forex_ai_dashboard.pipeline.evaluation_metrics import EvaluationMetrics
 from forex_ai_dashboard.models.model_hierarchy import ModelHierarchy
+
+from components import ComponentConfig
+from components.predictions import PredictionsVisualization
+from components.performance import PerformanceMetrics
+from components.system_status import SystemMonitor
+from utils.data_loader import DataLoader
 
 # Configure logging
 logging.basicConfig(
@@ -27,196 +34,98 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DashboardApp:
-    """Main dashboard application for forex AI monitoring."""
+    """Main dashboard application implementing modular components."""
     
     def __init__(self):
-        self.eval_dir = Path('evaluation_results')
-        self.data_dir = Path('data/processed')
-        self.model_dir = Path('models/hierarchy')
+        """Initialize dashboard with components and data loader."""
+        self.data_loader = DataLoader()
+        
+        # Initialize components
+        self.predictions = PredictionsVisualization(
+            ComponentConfig(
+                title="Price Predictions & Feature Analysis",
+                description="Model predictions and feature importance analysis",
+                height=600
+            )
+        )
+        
+        self.performance = PerformanceMetrics(
+            ComponentConfig(
+                title="Trading Performance",
+                description="Comprehensive performance metrics and analysis",
+                height=800
+            )
+        )
+        
+        self.system = SystemMonitor(
+            ComponentConfig(
+                title="System Health & Resources",
+                description="System monitoring and resource usage",
+                height=600
+            )
+        )
+        
+        # Track data refresh
+        self.last_refresh = None
+        self.refresh_interval = 300  # 5 minutes
     
-    def load_latest_data(self) -> pd.DataFrame:
-        """Load the latest processed forex data."""
+    def _should_refresh(self) -> bool:
+        """Check if data should be refreshed."""
+        if not self.last_refresh:
+            return True
+        
+        elapsed = (datetime.now() - self.last_refresh).total_seconds()
+        return elapsed > self.refresh_interval
+    
+    def _load_data(self) -> None:
+        """Load and distribute data to components."""
         try:
-            files = list(self.data_dir.glob('*.parquet'))
-            if not files:
-                return pd.DataFrame()
-            latest_file = max(files, key=lambda x: x.stat().st_mtime)
-            return pd.read_parquet(latest_file)
+            # Load forex data
+            df, issues = self.data_loader.load_forex_data(
+                timeframe=st.session_state.get('timeframe', '1H')
+            )
+            
+            if issues:
+                for issue in issues:
+                    st.warning(f"Data issue: {issue}")
+            
+            # Load evaluation results
+            eval_results, eval_issues = self.data_loader.load_evaluation_results()
+            
+            if eval_issues:
+                for issue in eval_issues:
+                    st.warning(f"Evaluation issue: {issue}")
+            
+            # Load model hierarchy
+            model, model_issues = self.data_loader.load_model_hierarchy()
+            
+            if model_issues:
+                for issue in model_issues:
+                    st.warning(f"Model issue: {issue}")
+            
+            # Update components with new data
+            if not df.empty:
+                # Update predictions component
+                self.predictions.update({
+                    'df': df,
+                    'predictions': eval_results[-1].predictions if eval_results else None,
+                    'std_dev': eval_results[-1].prediction_std if eval_results else None,
+                    'model': model,
+                    'features': df
+                })
+                
+                # Update performance component
+                self.performance.update({
+                    'returns': df['close'].pct_change(),
+                    'predictions': eval_results[-1].predictions if eval_results else None,
+                    'metrics': [r.metrics for r in eval_results] if eval_results else []
+                })
+            
+            self.last_refresh = datetime.now()
+            
         except Exception as e:
-            logger.error(f"Error loading data: {str(e)}")
-            return pd.DataFrame()
-    
-    def load_evaluation_results(self) -> List[EvaluationMetrics]:
-        """Load recent evaluation results."""
-        try:
-            files = list(self.eval_dir.glob('*.json'))
-            results = []
-            for f in sorted(files, key=lambda x: x.stat().st_mtime)[-50:]:  # Last 50 evaluations
-                with open(f, 'r') as file:
-                    data = json.load(file)
-                    results.append(EvaluationMetrics.from_dict(data))
-            return results
-        except Exception as e:
-            logger.error(f"Error loading evaluation results: {str(e)}")
-            return []
-    
-    def plot_predictions(self, df: pd.DataFrame, predictions: pd.Series):
-        """Plot actual vs predicted values."""
-        fig = go.Figure()
-        
-        # Add actual values
-        fig.add_trace(go.Scatter(
-            x=df.index,
-            y=df['close'],
-            name='Actual',
-            line=dict(color='blue')
-        ))
-        
-        # Add predictions
-        fig.add_trace(go.Scatter(
-            x=df.index,
-            y=predictions,
-            name='Predicted',
-            line=dict(color='red', dash='dash')
-        ))
-        
-        fig.update_layout(
-            title='Price Predictions vs Actual',
-            xaxis_title='Time',
-            yaxis_title='Price',
-            height=400
-        )
-        
-        return fig
-    
-    def plot_metrics_history(self, results: List[EvaluationMetrics]):
-        """Plot historical metrics."""
-        if not results:
-            return None
-            
-        # Extract metrics over time
-        dates = [r.timestamp for r in results]
-        metrics_history = {
-            metric: [r.metrics.get(metric, np.nan) for r in results]
-            for metric in results[0].metrics.keys()
-        }
-        
-        # Create subplots for different metric categories
-        fig = go.Figure()
-        
-        # Financial metrics
-        financial_metrics = ['sharpe_ratio', 'max_drawdown', 'annual_return']
-        for metric in financial_metrics:
-            if metric in metrics_history:
-                fig.add_trace(go.Scatter(
-                    x=dates,
-                    y=metrics_history[metric],
-                    name=metric,
-                    yaxis='y1'
-                ))
-        
-        # Prediction metrics
-        prediction_metrics = ['mse', 'directional_accuracy', 'ic']
-        for metric in prediction_metrics:
-            if metric in metrics_history:
-                fig.add_trace(go.Scatter(
-                    x=dates,
-                    y=metrics_history[metric],
-                    name=metric,
-                    yaxis='y2'
-                ))
-        
-        fig.update_layout(
-            title='Model Metrics Over Time',
-            xaxis_title='Time',
-            yaxis_title='Financial Metrics',
-            yaxis2=dict(
-                title='Prediction Metrics',
-                overlaying='y',
-                side='right'
-            ),
-            height=400
-        )
-        
-        return fig
-    
-    def plot_resource_usage(self, results: List[EvaluationMetrics]):
-        """Plot system resource usage."""
-        if not results:
-            return None
-            
-        # Extract resource metrics
-        dates = [r.timestamp for r in results]
-        resources = {
-            metric: [r.resource_usage.get(metric, np.nan) for r in results]
-            for metric in results[0].resource_usage.keys()
-        }
-        
-        fig = go.Figure()
-        
-        for metric, values in resources.items():
-            fig.add_trace(go.Scatter(
-                x=dates,
-                y=values,
-                name=metric
-            ))
-        
-        fig.update_layout(
-            title='System Resource Usage',
-            xaxis_title='Time',
-            yaxis_title='Usage (%)',
-            height=300
-        )
-        
-        return fig
-    
-    def display_model_drift(self, results: List[EvaluationMetrics]):
-        """Display model drift indicators."""
-        if not results:
-            return
-            
-        st.subheader("Model Drift Analysis")
-        
-        # Calculate drift metrics
-        recent = results[-1]
-        historical = results[:-1]
-        
-        if not historical:
-            st.warning("Insufficient historical data for drift analysis")
-            return
-        
-        # Calculate z-scores for key metrics
-        drift_metrics = {}
-        for metric in ['mse', 'directional_accuracy', 'ic']:
-            if metric in recent.metrics:
-                historical_values = [r.metrics.get(metric, np.nan) for r in historical]
-                current_value = recent.metrics[metric]
-                
-                mean = np.nanmean(historical_values)
-                std = np.nanstd(historical_values)
-                
-                if std > 0:
-                    z_score = (current_value - mean) / std
-                    drift_metrics[metric] = {
-                        'z_score': z_score,
-                        'current': current_value,
-                        'historical_mean': mean,
-                        'historical_std': std
-                    }
-        
-        # Display drift metrics
-        cols = st.columns(len(drift_metrics))
-        for col, (metric, stats) in zip(cols, drift_metrics.items()):
-            with col:
-                st.metric(
-                    label=metric,
-                    value=f"{stats['current']:.4f}",
-                    delta=f"{stats['z_score']:.2f}σ"
-                )
-                
-                # Add warning if drift detected
-                if abs(stats['z_score']) > 2:
-                    st.warning("⚠️ Significant drift detected")
+            logger.error(f"Error loading data: {str(e)}", exc_info=True)
+            st.error("An error occurred while loading data")
     
     def run(self):
         """Run the dashboard application."""
@@ -226,75 +135,59 @@ class DashboardApp:
             layout="wide"
         )
         
+        # Header
         st.title("Forex AI Trading Dashboard")
         
         try:
-            # Load data
-            df = self.load_latest_data()
-            eval_results = self.load_evaluation_results()
-            
-            if df.empty:
-                st.error("No data available")
-                return
-            
             # Sidebar controls
-            st.sidebar.header("Controls")
-            model_layer = st.sidebar.selectbox(
-                "Model Layer",
-                ["Strategist", "Tactician", "Executor"]
-            )
+            st.sidebar.header("Settings")
             
+            # Timeframe selection
             timeframe = st.sidebar.selectbox(
                 "Timeframe",
-                ["1H", "4H", "1D"]
+                ["1M", "5M", "15M", "1H", "4H", "1D"],
+                index=3  # Default to 1H
             )
             
-            # Main dashboard layout
-            col1, col2 = st.columns([2, 1])
+            if 'timeframe' not in st.session_state or st.session_state.timeframe != timeframe:
+                st.session_state.timeframe = timeframe
+                self.data_loader.clear_cache()
             
-            with col1:
-                st.subheader("Price Predictions")
-                if eval_results:
-                    latest = eval_results[-1]
-                    fig = self.plot_predictions(df, latest.predictions)
-                    st.plotly_chart(fig, use_container_width=True)
-                
-                st.subheader("Model Metrics")
-                fig = self.plot_metrics_history(eval_results)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+            # Auto-refresh toggle
+            auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
             
-            with col2:
-                st.subheader("Latest Metrics")
-                if eval_results:
-                    latest = eval_results[-1]
-                    for metric, value in latest.metrics.items():
-                        st.metric(metric, f"{value:.4f}")
-                
-                st.subheader("Resource Usage")
-                fig = self.plot_resource_usage(eval_results)
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+            # Manual refresh button
+            if st.sidebar.button("Refresh Data") or (auto_refresh and self._should_refresh()):
+                self.data_loader.clear_cache()
+                self._load_data()
             
-            # Model drift analysis
-            self.display_model_drift(eval_results)
+            # Load initial data if needed
+            if self._should_refresh():
+                self._load_data()
             
-            # Pipeline status
-            st.subheader("Pipeline Status")
-            status_cols = st.columns(4)
+            # Main content tabs
+            tab1, tab2, tab3 = st.tabs([
+                "Predictions & Features",
+                "Performance Analysis",
+                "System Monitor"
+            ])
             
-            with status_cols[0]:
-                st.metric("Data Freshness", "2 min ago", "On time")
-            with status_cols[1]:
-                st.metric("Feature Pipeline", "Healthy", "✓")
-            with status_cols[2]:
-                st.metric("Model Status", "Active", "✓")
-            with status_cols[3]:
-                st.metric("Last Update", "1 min ago", "✓")
+            # Render components in tabs
+            with tab1:
+                self.predictions.render()
+            
+            with tab2:
+                self.performance.render()
+            
+            with tab3:
+                self.system.render()
             
         except Exception as e:
             logger.error(f"Dashboard error: {str(e)}", exc_info=True)
-            st.error("An error occurred while updating the dashboard")
+            st.error(
+                "An error occurred while updating the dashboard. "
+                "Please check the logs for details."
+            )
 
 if __name__ == "__main__":
     dashboard = DashboardApp()
