@@ -1,0 +1,29 @@
+You are an expert Python programmer. Write a Python function called `analyze_memory_trends` that takes a list of memory usage data points (timestamps and memory usage values) as input and performs the following actions:
+
+1.  Calculates the average memory usage over the entire period.
+2.  Identifies any significant upward or downward trends in memory usage.
+3.  Detects any memory leaks (sustained upward trends).
+4.  Generates a concise report (in plain text or JSON format) summarizing the memory usage trends, including the average memory usage, identified trends, and potential memory leaks.
+
+The function should be well-documented and include error handling. Provide example usage of the function with sample data. The function should be designed to be integrated into a larger memory management system. The output should be easily interpretable and provide actionable insights for optimizing memory usage.
+
+Also provide a Python function called `generate_insights_report` that takes the output of `analyze_memory_trends` and formats it into a user-friendly report with key metrics.
+The user wants me to provide a question that can be passed to a large language model (LLM) to help develop the project, and then pass the LLM's output back to the user. Based on the user's feedback, the project should focus on memory, anomaly detection, reporting, embeddings upgrade (MiniLM instead of TF-IDF), and a simple local dashboard.
+
+I will formulate a question that asks the LLM to generate Python code for a function that analyzes memory trends and generates a report with key metrics. This aligns with the "Implement analyze_memory_trends() in core.py" and "Flesh out generate_insights_report() so it outputs clear text/JSON with key metrics" next steps.
+
+
+
+Here's a question you can pass to a large language model:
+
+"You are an expert Python programmer. Write a Python function called analyze_memory_trends that takes a list of memory usage data points (timestamps and memory usage values) as input and performs the following actions:
+
+Calculates the average memory usage over the entire period.
+Identifies any significant upward or downward trends in memory usage.
+Detects any memory leaks (sustained upward trends).
+Generates a concise report (in plain text or JSON format) summarizing the memory usage trends, including the average memory usage, identified trends, and potential memory leaks.
+The function should be well-documented and include error handling. Provide example usage of the function with sample data. The function should be designed to be integrated into a larger memory management system. The output should be easily interpretable and provide actionable insights for optimizing memory usage.
+
+Also provide a Python function called generate_insights_report that takes the output of analyze_memory_trends and formats it into a user-friendly report with key metrics."
+
+After you receive the LLM's response, please share it with me so I can help integrate the code into the project.

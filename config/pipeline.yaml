@@ -1,0 +1,23 @@
+# pipeline.yaml
+symbol: EURUSD
+sources:
+  - histdata
+  - dukascopy
+  - ejtrader
+year_range:
+  start: 2023
+  end: 2024
+months: [1,2,3,4,5,6,7,8]   # months to pull (1..12)
+downsample: null            # e.g. "5T" for 5-min, "1H" for hourly, or null
+max_disk_usage_percent: 85  # stop if disk usage > this on partition
+memory_threshold_gb: 6      # warn if < this free RAM (heuristic)
+parquet_partition_cols: [symbol, year, month]
+cleaning:
+  outlier_method: "iqr"     # or "zscore"
+  outlier_threshold: 10     # sigma for zscore or multiplier for IQR
+  forward_fill: true
+  backfill: false
+splits:
+  train_pct: 0.7
+  val_pct: 0.15
+  test_pct: 0.15
