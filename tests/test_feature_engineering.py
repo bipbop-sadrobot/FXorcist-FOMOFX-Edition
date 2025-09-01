@@ -140,6 +140,73 @@ def test_synthetic_feature_generator():
     assert not wavelet_features.empty
     assert 'wavelet_mean_0' in wavelet_features.columns
 
+def test_market_regime_detection(sample_data, feature_generator):
+    """Test market regime detection functionality."""
+    # First generate base features
+    df_features = feature_generator.generate_features(sample_data)
+    
+    # Test HMM regime detection
+    regimes_hmm, stats_hmm = feature_generator.detect_market_regimes(
+        df_features,
+        n_regimes=3,
+        method='hmm'
+    )
+    assert isinstance(regimes_hmm, np.ndarray)
+    assert len(regimes_hmm) == len(df_features)
+    assert len(np.unique(regimes_hmm)) <= 3
+    assert isinstance(stats_hmm, pd.DataFrame)
+    assert len(stats_hmm) == 3
+    
+    # Test k-means regime detection
+    regimes_kmeans, stats_kmeans = feature_generator.detect_market_regimes(
+        df_features,
+        n_regimes=3,
+        method='kmeans'
+    )
+    assert isinstance(regimes_kmeans, np.ndarray)
+    assert len(regimes_kmeans) == len(df_features)
+    assert len(np.unique(regimes_kmeans)) <= 3
+    assert isinstance(stats_kmeans, pd.DataFrame)
+    assert len(stats_kmeans) == 3
+
+def test_market_regime_detector():
+    """Test MarketRegimeDetector class directly."""
+    detector = MarketRegimeDetector(n_regimes=2, random_state=42)
+    
+    # Create synthetic data
+    n_samples = 1000
+    np.random.seed(42)
+    
+    # Simulate two regimes: low and high volatility
+    regime1 = np.random.normal(0, 0.1, n_samples // 2)
+    regime2 = np.random.normal(0, 0.3, n_samples // 2)
+    returns = np.concatenate([regime1, regime2])
+    
+    df = pd.DataFrame({
+        'returns': returns,
+        'close': (1 + returns).cumprod(),
+        'volume': np.random.randint(1000, 5000, n_samples)
+    })
+    
+    # Test HMM detection
+    detector.method = 'hmm'
+    regimes_hmm = detector.fit_predict(df)
+    assert len(regimes_hmm) == n_samples
+    assert len(np.unique(regimes_hmm)) <= 2
+    
+    # Test k-means detection
+    detector.method = 'kmeans'
+    regimes_kmeans = detector.fit_predict(df)
+    assert len(regimes_kmeans) == n_samples
+    assert len(np.unique(regimes_kmeans)) <= 2
+    
+    # Test regime statistics
+    stats = detector.get_regime_stats(df, regimes_kmeans)
+    assert isinstance(stats, pd.DataFrame)
+    assert len(stats) == 2
+    assert 'avg_return' in stats.columns
+    assert 'volatility' in stats.columns
+
 def test_error_handling(sample_data, feature_generator):
     """Test error handling in feature generation."""
     # Test with missing required column
@@ -155,6 +222,13 @@ def test_error_handling(sample_data, feature_generator):
         feature_list=['nonexistent_feature']
     )
     assert 'nonexistent_feature' not in df_features.columns
+    
+    # Test with invalid regime detection method
+    with pytest.raises(ValueError):
+        feature_generator.detect_market_regimes(
+            sample_data,
+            method='invalid_method'
+        )
 
 if __name__ == '__main__':
     pytest.main([__file__])
