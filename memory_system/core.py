@@ -225,34 +225,23 @@ def analyze_memory_trends(
     Analyze memory usage trends and system health metrics.
     
     Args:
-        memory_data: List of (timestamp, usage) tuples
-        leak_threshold: Minimum slope for memory leak warning
-        window: Window size for trend analysis
-        output_format: Output format ("dict" or "json")
+        memory_data (List[Tuple[float, float]]): List of (timestamp, memory_usage) tuples.
+            - timestamp: float (epoch or sequential index)
+            - memory_usage: float (e.g., MB)
+        leak_threshold (float): Minimum slope for memory leak warning
+        window (int): Window size for trend analysis
+        output_format (str): Output format ("dict" or "json")
         
     Returns:
-        Dict with metrics including:
-        - Memory usage stats
-        - Trend analysis
-        - Health indicators
-        - Quarantine stats
-    """
-    """
-    Analyze memory usage trends from a list of (timestamp, usage) tuples.
-
-    Args:
-        memory_data (List[Tuple[float, float]]): List of (timestamp, memory_usage).
-            - timestamp: float (epoch or sequential index).
-            - memory_usage: float (e.g., MB).
-        leak_threshold (float): Minimum slope considered as a memory leak (per unit time).
-        window (int): Window size for rolling slope calculation.
-        output_format (str): "dict" (default) or "json".
-
-    Returns:
-        Dict[str, Any] or str: Report with metrics and trends.
-
+        Dict[str, Any] or str: Report containing:
+            - Memory usage statistics
+            - Trend analysis and slopes
+            - Health indicators
+            - Quarantine metrics
+            - SHAP explanations (when available)
+            
     Raises:
-        ValueError: If memory_data is empty or improperly formatted.
+        ValueError: If memory_data is empty or improperly formatted
     """
     if not memory_data or not all(isinstance(x, (list, tuple)) and len(x) == 2 for x in memory_data):
         raise ValueError("memory_data must be a list of (timestamp, usage) tuples.")
