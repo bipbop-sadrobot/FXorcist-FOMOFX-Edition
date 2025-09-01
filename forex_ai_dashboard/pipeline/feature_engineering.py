@@ -1,15 +1,19 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, List, Optional, Union, Callable
+from typing import Dict, List, Optional, Union, Callable, Tuple
 from pathlib import Path
 from datetime import datetime
 import hashlib
 import json
 from dataclasses import dataclass, asdict
 import networkx as nx
-from scipy import stats
+from scipy import stats, fft
 import ta  # Technical Analysis library
+import shap
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+import pywt  # Wavelet transforms
+from boruta import BorutaPy
 
 # Configure logging
 logging.basicConfig(
@@ -223,30 +227,124 @@ class FeatureGenerator:
         metadata.updated_at = datetime.now()
         self.registry.register_feature(metadata)
 
-def analyze_feature_importance(
-    df: pd.DataFrame,
-    target_col: str,
-    feature_cols: List[str],
-    method: str = 'correlation'
-) -> pd.DataFrame:
-    """Analyze feature importance using various methods."""
-    results = []
+class FeatureSelector:
+    """Automated feature selection using multiple methods."""
     
-    if method == 'correlation':
-        for feature in feature_cols:
-            corr = stats.spearmanr(
-                df[feature].fillna(0),
-                df[target_col].fillna(0)
-            )[0]
-            results.append({
-                'feature': feature,
-                'importance': abs(corr),
-                'raw_score': corr
-            })
+    def __init__(self, random_state: int = 42):
+        self.random_state = random_state
+        self.selected_features_ = None
+        self.importance_scores_ = None
+        
+    def select_features_boruta(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+        max_iter: int = 100
+    ) -> List[str]:
+        """Select features using Boruta algorithm."""
+        rf = RandomForestRegressor(n_jobs=-1, random_state=self.random_state)
+        boruta = BorutaPy(
+            rf,
+            n_estimators='auto',
+            random_state=self.random_state,
+            max_iter=max_iter
+        )
+        
+        # Fit Boruta
+        boruta.fit(X.values, y.values)
+        
+        # Get selected features
+        selected_features = X.columns[boruta.support_].tolist()
+        self.selected_features_ = selected_features
+        
+        return selected_features
     
-    # Add more methods as needed (mutual information, SHAP, etc.)
+    def analyze_feature_importance(
+        self,
+        df: pd.DataFrame,
+        target_col: str,
+        feature_cols: List[str],
+        method: str = 'all'
+    ) -> pd.DataFrame:
+        """Analyze feature importance using multiple methods."""
+        results = []
+        
+        # Base correlation analysis
+        if method in ['correlation', 'all']:
+            for feature in feature_cols:
+                corr = stats.spearmanr(
+                    df[feature].fillna(0),
+                    df[target_col].fillna(0)
+                )[0]
+                results.append({
+                    'feature': feature,
+                    'importance': abs(corr),
+                    'method': 'correlation',
+                    'raw_score': corr
+                })
+        
+        # SHAP analysis
+        if method in ['shap', 'all']:
+            X = df[feature_cols]
+            y = df[target_col]
+            model = RandomForestRegressor(n_estimators=100, random_state=self.random_state)
+            model.fit(X, y)
+            
+            explainer = shap.TreeExplainer(model)
+            shap_values = explainer.shap_values(X)
+            
+            for idx, feature in enumerate(feature_cols):
+                importance = np.mean(np.abs(shap_values[:, idx]))
+                results.append({
+                    'feature': feature,
+                    'importance': importance,
+                    'method': 'shap',
+                    'raw_score': importance
+                })
+        
+        return pd.DataFrame(results)
+
+class SyntheticFeatureGenerator:
+    """Generates synthetic features using various transforms."""
     
-    return pd.DataFrame(results).sort_values('importance', ascending=False)
+    @staticmethod
+    def generate_fourier_features(
+        series: pd.Series,
+        num_components: int = 3
+    ) -> pd.DataFrame:
+        """Generate features using Fourier transform."""
+        # Compute FFT
+        fft_vals = fft.fft(series.values)
+        fft_freqs = fft.fftfreq(len(series))
+        
+        # Get dominant frequencies
+        freq_idx = np.argsort(np.abs(fft_vals))[-num_components:]
+        
+        features = pd.DataFrame()
+        for i, idx in enumerate(freq_idx):
+            features[f'fourier_amp_{i}'] = np.abs(fft_vals[idx])
+            features[f'fourier_phase_{i}'] = np.angle(fft_vals[idx])
+            features[f'fourier_freq_{i}'] = fft_freqs[idx]
+        
+        return features
+    
+    @staticmethod
+    def generate_wavelet_features(
+        series: pd.Series,
+        wavelet: str = 'db1',
+        level: int = 3
+    ) -> pd.DataFrame:
+        """Generate features using wavelet transform."""
+        # Compute wavelet transform
+        coeffs = pywt.wavedec(series.values, wavelet, level=level)
+        
+        features = pd.DataFrame()
+        for i, coeff in enumerate(coeffs):
+            features[f'wavelet_mean_{i}'] = np.mean(np.abs(coeff))
+            features[f'wavelet_std_{i}'] = np.std(coeff)
+            features[f'wavelet_energy_{i}'] = np.sum(coeff**2)
+        
+        return features
 
 if __name__ == "__main__":
     # Example usage
