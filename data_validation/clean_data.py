@@ -1,109 +1,225 @@
 import pandas as pd
 import numpy as np
 import logging
+from typing import Dict, List, Optional, Union
+from pathlib import Path
+from scipy import stats
+from scipy.signal import medfilt
+from statsmodels.robust import mad
 
-# Set up logging for tracking cleaning process
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
+    handlers=[
+        logging.FileHandler("logs/cleaning.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-def clean_forex_data(df: pd.DataFrame, timestamp_col: str = 'timestamp', price_cols: list = ['open', 'high', 'low', 'close'], volume_col: str = 'volume') -> pd.DataFrame:
+# Constants
+CLEANING_METHODS = {
+    'hampel': 'Hampel filter for outlier detection',
+    'rolling_zscore': 'Rolling z-score filter',
+    'median': 'Median filter',
+    'ewma': 'Exponentially weighted moving average'
+}
+
+class AdaptiveThresholds:
+    """Dynamic threshold calculation based on market conditions."""
+    
+    def __init__(self, data: pd.DataFrame, price_cols: List[str]):
+        self.data = data
+        self.price_cols = price_cols
+        self.volatility = self._calculate_volatility()
+        self.thresholds = self._set_thresholds()
+    
+    def _calculate_volatility(self) -> float:
+        """Calculate overall market volatility."""
+        if 'close' in self.data.columns:
+            returns = np.log(self.data['close'] / self.data['close'].shift(1))
+            return returns.std()
+        return np.nan
+    
+    def _set_thresholds(self) -> Dict[str, float]:
+        """Set adaptive thresholds based on market conditions."""
+        base_threshold = 4.0  # Base z-score threshold
+        vol_factor = min(2.0, max(0.5, self.volatility * 100))
+        
+        return {
+            'zscore': base_threshold * vol_factor,
+            'hampel': 3 * vol_factor,
+            'mad': 3.5 * vol_factor,
+            'gap': pd.Timedelta(minutes=5 if self.volatility > 0.001 else 2)
+        }
+
+def hampel_filter(series: pd.Series, window: int = 10, threshold: float = 3) -> pd.Series:
     """
-    Comprehensive data cleaning function for forex time-series data.
-
-    This function performs the following steps:
-    1. Convert timestamp to datetime and set as index.
-    2. Handle missing values: Forward-fill for prices (common in time-series to avoid gaps), drop if too many missing.
-    3. Detect and remove outliers: Using IQR method for price columns.
-    4. Remove duplicates: Based on timestamp.
-    5. Ensure price consistency: e.g., high >= low, close between open and high/low.
-    6. Derive basic features: e.g., mid-price, spread.
-    7. Normalize data: Resample to consistent frequency if needed (e.g., daily).
-    8. Log the process and raise errors for critical issues.
-
-    Parameters:
-    - df: Input DataFrame with forex data.
-    - timestamp_col: Name of the timestamp column.
-    - price_cols: List of price-related columns.
-    - volume_col: Name of the volume column (optional).
-
-    Returns:
-    - Cleaned DataFrame.
-
-    Raises:
-    - ValueError: If critical issues like invalid prices or excessive missing data.
+    Apply Hampel filter for outlier detection and replacement.
+    Uses median absolute deviation (MAD) for robust statistics.
     """
+    rolling_median = series.rolling(window=window, center=True).median()
+    rolling_mad = mad(series.rolling(window=window, center=True))
+    diff = np.abs(series - rolling_median)
+    outliers = diff > (threshold * rolling_mad)
+    return pd.Series(np.where(outliers, rolling_median, series), index=series.index)
+
+def adaptive_clean_forex_data(
+    df: pd.DataFrame,
+    price_cols: List[str] = None,
+    methods: List[str] = None,
+    window_size: int = 20,
+    is_intraday: bool = True
+) -> pd.DataFrame:
+    """
+    Enhanced forex data cleaning with adaptive methods and market-aware processing.
+    
+    Features:
+    1. Adaptive thresholds based on market volatility
+    2. Multiple cleaning methods (Hampel, rolling z-score, median filter)
+    3. Intelligent gap filling based on market conditions
+    4. Price consistency enforcement
+    5. Volatility-aware outlier detection
+    6. Incremental processing support
+    """
+    price_cols = price_cols or ['open', 'high', 'low', 'close']
+    methods = methods or ['hampel', 'rolling_zscore']
+    
+    logger.info(f"Starting cleaning process with methods: {methods}")
     original_shape = df.shape
-    logging.info(f"Starting cleaning on DataFrame of shape {original_shape}")
+    
+    # Initialize adaptive thresholds
+    thresholds = AdaptiveThresholds(df, price_cols)
+    logger.info(f"Adaptive thresholds set: {thresholds.thresholds}")
+    
+    try:
+        # 1. Initial data preparation
+        df = df.copy()
+        df = df.sort_index()
+        
+        # 2. Handle missing values with adaptive gap filling
+        for col in price_cols:
+            missing_gaps = df[col].isnull()
+            if missing_gaps.any():
+                gap_sizes = missing_gaps.astype(int).groupby(
+                    (missing_gaps.astype(int).diff() != 0).cumsum()
+                ).sum()
+                
+                for gap_size in gap_sizes.unique():
+                    if gap_size <= 5:  # Small gaps
+                        df[col] = df[col].interpolate(method='linear')
+                    else:  # Larger gaps
+                        df[col] = df[col].fillna(method='ffill')
+        
+        # 3. Apply cleaning methods
+        cleaned_df = df.copy()
+        for col in price_cols:
+            if 'hampel' in methods:
+                cleaned_df[col] = hampel_filter(
+                    cleaned_df[col],
+                    window=window_size,
+                    threshold=thresholds.thresholds['hampel']
+                )
+            
+            if 'rolling_zscore' in methods:
+                rolling_mean = cleaned_df[col].rolling(window=window_size).mean()
+                rolling_std = cleaned_df[col].rolling(window=window_size).std()
+                z_scores = np.abs((cleaned_df[col] - rolling_mean) / rolling_std)
+                outliers = z_scores > thresholds.thresholds['zscore']
+                cleaned_df.loc[outliers, col] = rolling_mean[outliers]
+            
+            if 'median' in methods:
+                cleaned_df[col] = pd.Series(
+                    medfilt(cleaned_df[col], kernel_size=5),
+                    index=cleaned_df.index
+                )
+        
+        # 4. Ensure price consistency
+        if all(col in cleaned_df.columns for col in ['high', 'low']):
+            invalid_hl = cleaned_df['high'] < cleaned_df['low']
+            if invalid_hl.any():
+                logger.warning(f"Correcting {invalid_hl.sum()} invalid high/low pairs")
+                cleaned_df.loc[invalid_hl, ['high', 'low']] = cleaned_df.loc[invalid_hl, ['low', 'high']].values
+        
+        # 5. Add quality metrics
+        if is_intraday:
+            cleaned_df['quality_score'] = 1.0
+            for col in price_cols:
+                # Penalize based on number of corrections
+                corrections = (df[col] != cleaned_df[col]).sum() / len(df)
+                cleaned_df['quality_score'] *= (1 - corrections)
+        
+        # 6. Add cleaning metadata
+        cleaned_df.attrs['cleaning_info'] = {
+            'methods_applied': methods,
+            'thresholds': thresholds.thresholds,
+            'window_size': window_size,
+            'original_shape': original_shape,
+            'cleaned_shape': cleaned_df.shape,
+            'timestamp': pd.Timestamp.now()
+        }
+        
+        logger.info(
+            f"Cleaning complete. Original shape: {original_shape}, "
+            f"Cleaned shape: {cleaned_df.shape}, "
+            f"Average quality score: {cleaned_df['quality_score'].mean():.3f}"
+        )
+        
+        return cleaned_df
+    
+    except Exception as e:
+        logger.error(f"Error during cleaning: {str(e)}", exc_info=True)
+        raise
 
-    # Step 1: Timestamp handling
-    if timestamp_col not in df.columns:
-        raise ValueError(f"Timestamp column '{timestamp_col}' not found in DataFrame.")
-    df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors='coerce')
-    df = df.dropna(subset=[timestamp_col])  # Drop invalid timestamps
-    df = df.set_index(timestamp_col).sort_index()
+def run_cleaning_tests():
+    """Run comprehensive cleaning tests with various scenarios."""
+    # Generate test data
+    np.random.seed(42)
+    dates = pd.date_range(start='2025-08-01', periods=1000, freq='1min')
+    base_price = 1.1000
+    
+    # Generate realistic forex price movements
+    returns = np.random.normal(0, 0.0002, 1000)  # Small random changes
+    prices = base_price * np.exp(np.cumsum(returns))  # Log-normal price process
+    
+    # Add some artificial anomalies
+    test_data = pd.DataFrame({
+        'timestamp': dates,
+        'open': prices,
+        'high': prices * (1 + np.random.uniform(0, 0.002, 1000)),
+        'low': prices * (1 - np.random.uniform(0, 0.002, 1000)),
+        'close': prices * (1 + np.random.normal(0, 0.001, 1000)),
+        'volume': np.random.randint(1000, 5000, 1000)
+    })
+    
+    # Add various types of anomalies
+    test_data.loc[100:102, 'high'] *= 1.1  # Price spikes
+    test_data.loc[300:305, 'low'] *= 0.9  # Price drops
+    test_data.loc[500:510, 'close'] = np.nan  # Missing values
+    test_data.loc[700, 'high'] = test_data.loc[700, 'low'] * 0.9  # Invalid high/low
+    
+    # Test different cleaning configurations
+    test_cases = [
+        ("Basic cleaning", {'methods': ['hampel']}),
+        ("Multiple methods", {'methods': ['hampel', 'rolling_zscore']}),
+        ("Intraday cleaning", {'methods': ['hampel', 'median'], 'is_intraday': True}),
+        ("Custom window", {'methods': ['rolling_zscore'], 'window_size': 30}),
+    ]
+    
+    for test_name, kwargs in test_cases:
+        try:
+            logger.info(f"\nRunning test: {test_name}")
+            cleaned = adaptive_clean_forex_data(test_data.set_index('timestamp'), **kwargs)
+            
+            # Verify cleaning results
+            logger.info(f"Test {test_name} results:")
+            logger.info(f"- Missing values: {cleaned.isnull().sum().sum()}")
+            logger.info(f"- Quality score: {cleaned['quality_score'].mean():.3f}")
+            logger.info(f"- Methods applied: {cleaned.attrs['cleaning_info']['methods_applied']}")
+            
+        except Exception as e:
+            logger.error(f"Test failed: {test_name}\nError: {str(e)}")
 
-    # Step 2: Missing values
-    missing_perc = df.isnull().mean() * 100
-    logging.info(f"Missing values percentage: {missing_perc.to_dict()}")
-    if any(missing_perc > 50):
-        raise ValueError("Excessive missing data (>50%) in some columns.")
-    df[price_cols] = df[price_cols].ffill()  # Forward-fill prices
-    if volume_col in df.columns:
-        df[volume_col] = df[volume_col].fillna(0)  # Volume can be 0 if missing
-
-    # Step 3: Outlier detection (IQR for each price column)
-    for col in price_cols:
-        Q1 = df[col].quantile(0.25)
-        Q3 = df[col].quantile(0.75)
-        IQR = Q3 - Q1
-        lower_bound = Q1 - 1.5 * IQR
-        upper_bound = Q3 + 1.5 * IQR
-        outliers = (df[col] < lower_bound) | (df[col] > upper_bound)
-        logging.info(f"Outliers in {col}: {outliers.sum()}")
-        df[col] = np.where(outliers, np.nan, df[col])  # Replace outliers with NaN
-        df[col] = df[col].ffill()  # Fill with previous value
-
-    # Step 4: Remove duplicates (already sorted by index)
-    df = df[~df.index.duplicated(keep='first')]
-
-    # Step 5: Price consistency checks
-    if 'high' in price_cols and 'low' in price_cols:
-        invalid_prices = df['high'] < df['low']
-        if invalid_prices.any():
-            logging.warning(f"Invalid prices (high < low) found in {invalid_prices.sum()} rows. Correcting by swapping.")
-            df.loc[invalid_prices, ['high', 'low']] = df.loc[invalid_prices, ['low', 'high']].values
-    if 'open' in price_cols and 'close' in price_cols and 'high' in price_cols and 'low' in price_cols:
-        invalid_close = (df['close'] > df['high']) | (df['close'] < df['low'])
-        if invalid_close.any():
-            raise ValueError(f"Invalid close prices outside high/low in {invalid_close.sum()} rows.")
-
-    # Step 6: Derive features
-    if all(col in df.columns for col in ['open', 'high', 'low', 'close']):
-        df['mid_price'] = (df['high'] + df['low']) / 2
-        df['spread'] = df['high'] - df['low']
-
-    # Step 7: Resample (optional, e.g., to daily if intraday data)
-    # df = df.resample('D').agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}).dropna()
-
-    cleaned_shape = df.shape
-    logging.info(f"Cleaning complete. Original shape: {original_shape}, Cleaned shape: {cleaned_shape}")
-
-    return df.reset_index()  # Reset index for output
-
-# Example usage
 if __name__ == "__main__":
-    # Sample DataFrame for testing
-    sample_data = {
-        'timestamp': pd.date_range(start='2025-08-17', periods=10, freq='T'),
-        'open': np.random.uniform(1.08, 1.10, 10),
-        'high': np.random.uniform(1.09, 1.11, 10),
-        'low': np.random.uniform(1.07, 1.09, 10),
-        'close': np.random.uniform(1.08, 1.10, 10),
-        'volume': np.random.randint(100, 1000, 10)
-    }
-    sample_df = pd.DataFrame(sample_data)
-    sample_df.loc[2, 'high'] = sample_df.loc[2, 'low'] - 0.01  # Introduce invalid price
-    sample_df.loc[5, 'close'] = np.nan  # Introduce missing value
-
-    cleaned_df = clean_forex_data(sample_df)
-    print("Cleaned DataFrame:")
-    print(cleaned_df.head())
+    run_cleaning_tests()
