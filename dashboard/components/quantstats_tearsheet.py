@@ -10,6 +10,7 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import os
 
 from . import (
     PerformanceComponent,
@@ -238,7 +239,20 @@ class QuantStatsTearsheet(PerformanceComponent):
                 help="Compare portfolio against S&P 500 benchmark"
             )
 
-            # Report generation section
+            # Refresh button
+            if st.button("🔄 Refresh Tearsheet", help="Recalculate all metrics"):
+                self.clear_cache()
+                self.report_path = None  # Clear old report
+
+        # Get data from cache
+        data = self._cache.get('data')
+
+        if not data or 'returns' not in data:
+            st.info("No portfolio data available. Please ensure returns data is loaded.")
+            return
+
+        # Report generation section in sidebar after data check
+        with st.sidebar:
             st.divider()
             st.subheader("HTML Report")
             if st.button("📊 Generate Full Report", help="Generate comprehensive HTML report"):
@@ -254,13 +268,6 @@ class QuantStatsTearsheet(PerformanceComponent):
                         file_name="quantstats_report.html",
                         mime="text/html"
                     )
-
-            # Refresh button
-            if st.button("🔄 Refresh Tearsheet", help="Recalculate all metrics"):
-                self.clear_cache()
-                self.report_path = None  # Clear old report
-
-        # Get data from cache
         data = self._cache.get('data')
 
         if not data or 'returns' not in data:
