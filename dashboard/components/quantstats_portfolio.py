@@ -1,7 +1,12 @@
 """
 QuantStats Portfolio Analytics Component
 Provides comprehensive portfolio analysis using quantstats library.
-Integrates with the existing dashboard framework.
+Features:
+- Portfolio performance analysis
+- Risk metrics calculation
+- Benchmark comparison
+- HTML report generation
+- Portfolio comparison
 """
 
 from typing import Dict, List, Optional, Any
@@ -9,6 +14,8 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import os
+import numpy as np
 
 from . import (
     PerformanceComponent,
