@@ -491,29 +491,40 @@ class EnhancedDataLoader:
         num_samples: int,
         regime_stats: Dict[str, Dict[str, float]]
     ) -> pd.DataFrame:
-        """Generate complex price patterns."""
+        """Generate complex price patterns including behavioral and microstructure."""
         patterns = []
         
-        # Head and shoulders pattern
-        head_shoulder_samples = int(num_samples * 0.4)
-        patterns.append(self._generate_head_shoulders(
-            head_shoulder_samples,
-            regime_stats.get('trending', {'volatility': 0.01})
-        ))
+        # Technical patterns
+        patterns.extend([
+            self._generate_head_shoulders(
+                int(num_samples * 0.2),
+                regime_stats.get('trending', {'volatility': 0.01})
+            ),
+            self._generate_double_pattern(
+                int(num_samples * 0.15),
+                regime_stats.get('ranging', {'volatility': 0.01})
+            ),
+            self._generate_triangle_pattern(
+                int(num_samples * 0.15),
+                regime_stats.get('volatile', {'volatility': 0.02})
+            )
+        ])
         
-        # Double top/bottom pattern
-        double_pattern_samples = int(num_samples * 0.3)
-        patterns.append(self._generate_double_pattern(
-            double_pattern_samples,
-            regime_stats.get('ranging', {'volatility': 0.01})
-        ))
-        
-        # Triangle pattern
-        triangle_samples = int(num_samples * 0.3)
-        patterns.append(self._generate_triangle_pattern(
-            triangle_samples,
-            regime_stats.get('volatile', {'volatility': 0.02})
-        ))
+        # Behavioral patterns
+        patterns.extend([
+            self._generate_sentiment_cycle(
+                int(num_samples * 0.15),
+                regime_stats
+            ),
+            self._generate_crowd_psychology(
+                int(num_samples * 0.15),
+                regime_stats
+            ),
+            self._generate_institutional_flow(
+                int(num_samples * 0.2),
+                regime_stats
+            )
+        ])
         
         return pd.concat(patterns)
 
@@ -576,15 +587,24 @@ class EnhancedDataLoader:
         return data
 
     def _add_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add market microstructure features to synthetic data."""
-        # Add bid-ask spread
+        """Add advanced market microstructure features."""
+        # Basic features
         df['spread'] = np.random.exponential(0.0001, len(df))
-        
-        # Add tick volume
         df['tick_volume'] = np.random.poisson(100, len(df))
         
-        # Add order flow imbalance
-        df['order_imbalance'] = np.random.normal(0, 1, len(df))
+        # Order book features
+        df['order_imbalance'] = self._generate_order_imbalance(len(df))
+        df['market_depth'] = self._generate_market_depth(len(df))
+        df['liquidity_score'] = self._generate_liquidity_score(len(df))
+        
+        # High-frequency features
+        df['trade_sign'] = np.sign(np.random.randn(len(df)))
+        df['trade_size'] = np.random.lognormal(4, 1, len(df))
+        df['trade_intensity'] = self._generate_trade_intensity(len(df))
+        
+        # Institutional activity
+        df['large_order_flag'] = (df['trade_size'] > np.percentile(df['trade_size'], 95)).astype(int)
+        df['institutional_flow'] = self._generate_institutional_flow_indicator(len(df))
         
         return df
 
@@ -593,17 +613,25 @@ class EnhancedDataLoader:
         synthetic_df: pd.DataFrame,
         base_data: pd.DataFrame
     ) -> pd.DataFrame:
-        """Validate synthetic data quality and adjust if needed."""
-        # Check statistical properties
-        synthetic_returns = synthetic_df['close'].pct_change().dropna()
-        base_returns = base_data['close'].pct_change().dropna()
-        
-        # Adjust if statistics deviate too much
-        if abs(synthetic_returns.std() - base_returns.std()) > 0.1:
-            synthetic_df['close'] = synthetic_df['close'] * (base_returns.std() / synthetic_returns.std())
-        
-        # Ensure no negative prices
-        synthetic_df.loc[synthetic_df['close'] <= 0, 'close'] = base_data['close'].mean()
+        """Enhanced validation with parallel processing and quality metrics."""
+        with self.process_pool as pool:
+            # Statistical validation
+            futures = []
+            futures.append(pool.submit(self._validate_statistical_properties, synthetic_df, base_data))
+            futures.append(pool.submit(self._validate_microstructure, synthetic_df))
+            futures.append(pool.submit(self._validate_patterns, synthetic_df))
+            
+            # Collect results
+            for future in futures:
+                synthetic_df = future.result()
+            
+            # Quality scoring
+            quality_score = self._calculate_quality_score(synthetic_df, base_data)
+            logger.info(f"Synthetic data quality score: {quality_score:.2f}")
+            
+            # Add quality metadata
+            synthetic_df.attrs['quality_score'] = quality_score
+            synthetic_df.attrs['validation_timestamp'] = pd.Timestamp.now()
         
         return synthetic_df
 
