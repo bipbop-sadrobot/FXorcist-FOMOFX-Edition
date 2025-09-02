@@ -230,63 +230,259 @@ class EnhancedDataLoader:
         self,
         base_data: pd.DataFrame,
         num_samples: int = 1000,
-        include_edge_cases: bool = True
+        include_edge_cases: bool = True,
+        market_regimes: Optional[List[str]] = None,
+        correlation_pairs: Optional[List[Tuple[str, str]]] = None
     ) -> pd.DataFrame:
-        """Generate synthetic forex data including edge cases.
+        """Generate sophisticated synthetic forex data with market patterns.
         
         Args:
             base_data: Base data to generate synthetic samples from
             num_samples: Number of synthetic samples to generate
             include_edge_cases: Whether to include edge cases
+            market_regimes: List of market regimes to simulate ('trending', 'ranging', 'volatile')
+            correlation_pairs: List of currency pairs to maintain correlations with
             
         Returns:
-            DataFrame containing synthetic data
+            DataFrame containing synthetic data with advanced patterns
         """
-        synthetic_data = []
+        logger.info("Generating advanced synthetic data with market patterns")
         
-        # Calculate base statistics
+        # Initialize market regime parameters
+        if market_regimes is None:
+            market_regimes = ['trending', 'ranging', 'volatile']
+            
+        regime_weights = {
+            'trending': 0.4,
+            'ranging': 0.4,
+            'volatile': 0.2
+        }
+        
+        # Calculate base statistics with regime awareness
         returns = base_data['close'].pct_change().dropna()
-        mean_return = returns.mean()
-        std_return = returns.std()
+        volatility = returns.rolling(20).std()
         
-        # Generate normal market conditions
-        normal_samples = int(num_samples * (1 - self.synthesis_config['edge_case_ratio']))
-        normal_returns = np.random.normal(mean_return, std_return, normal_samples)
+        # Detect existing market regimes
+        existing_regimes = self._detect_market_regimes(base_data)
+        regime_stats = self._calculate_regime_statistics(base_data, existing_regimes)
         
+        synthetic_data = []
+        samples_per_regime = {
+            regime: int(num_samples * regime_weights.get(regime, 0.1))
+            for regime in market_regimes
+        }
+        
+        # Generate data for each market regime
+        for regime in market_regimes:
+            regime_data = self._generate_regime_data(
+                regime,
+                samples_per_regime[regime],
+                regime_stats[regime],
+                correlation_pairs
+            )
+            synthetic_data.append(regime_data)
+            
+        # Generate adversarial patterns
         if include_edge_cases:
-            # Generate trend reversals
-            trend_samples = int(num_samples * self.synthesis_config['edge_case_ratio'] * 0.4)
-            trend_returns = self._generate_trend_reversals(mean_return, std_return, trend_samples)
-            
-            # Generate volatility clusters
-            vol_samples = int(num_samples * self.synthesis_config['edge_case_ratio'] * 0.3)
-            vol_returns = self._generate_volatility_clusters(std_return, vol_samples)
-            
-            # Generate flash crashes
-            crash_samples = int(num_samples * self.synthesis_config['edge_case_ratio'] * 0.3)
-            crash_returns = self._generate_flash_crashes(mean_return, std_return, crash_samples)
-            
-            all_returns = np.concatenate([normal_returns, trend_returns, vol_returns, crash_returns])
-        else:
-            all_returns = normal_returns
-            
-        # Convert returns to prices
-        base_price = base_data['close'].iloc[-1]
-        prices = base_price * (1 + all_returns).cumprod()
+            edge_cases = self._generate_adversarial_patterns(
+                base_data,
+                int(num_samples * self.synthesis_config['edge_case_ratio']),
+                regime_stats
+            )
+            synthetic_data.append(edge_cases)
         
-        # Create synthetic OHLC data
-        synthetic_df = pd.DataFrame({
-            'timestamp': pd.date_range(start=base_data.index[-1], periods=len(prices), freq='1min'),
+        # Combine all synthetic data
+        combined_df = pd.concat(synthetic_data)
+        combined_df.sort_index(inplace=True)
+        
+        # Add market microstructure features
+        combined_df = self._add_microstructure_features(combined_df)
+        
+        # Validate synthetic data quality
+        combined_df = self._validate_synthetic_data(combined_df, base_data)
+        
+        return combined_df
+
+    def _detect_market_regimes(self, data: pd.DataFrame) -> pd.Series:
+        """Detect market regimes using advanced technical analysis."""
+        # Calculate key indicators
+        returns = data['close'].pct_change()
+        volatility = returns.rolling(20).std()
+        trend = data['close'].rolling(50).mean()
+        
+        # Define regime conditions
+        regimes = pd.Series(index=data.index, dtype=str)
+        regimes.loc[volatility > volatility.quantile(0.8)] = 'volatile'
+        regimes.loc[volatility <= volatility.quantile(0.2)] = 'ranging'
+        regimes.loc[
+            (returns.rolling(20).mean().abs() > returns.std()) & 
+            (volatility <= volatility.quantile(0.8))
+        ] = 'trending'
+        
+        return regimes
+
+    def _calculate_regime_statistics(
+        self, 
+        data: pd.DataFrame, 
+        regimes: pd.Series
+    ) -> Dict[str, Dict[str, float]]:
+        """Calculate statistics for each market regime."""
+        stats = {}
+        for regime in regimes.unique():
+            regime_data = data[regimes == regime]
+            if len(regime_data) > 0:
+                returns = regime_data['close'].pct_change().dropna()
+                stats[regime] = {
+                    'mean_return': returns.mean(),
+                    'volatility': returns.std(),
+                    'skewness': returns.skew(),
+                    'kurtosis': returns.kurtosis(),
+                    'autocorrelation': returns.autocorr()
+                }
+        return stats
+
+    def _generate_regime_data(
+        self,
+        regime: str,
+        num_samples: int,
+        stats: Dict[str, float],
+        correlation_pairs: Optional[List[Tuple[str, str]]] = None
+    ) -> pd.DataFrame:
+        """Generate synthetic data for a specific market regime."""
+        if regime == 'trending':
+            return self._generate_trending_data(num_samples, stats)
+        elif regime == 'ranging':
+            return self._generate_ranging_data(num_samples, stats)
+        else:  # volatile
+            return self._generate_volatile_data(num_samples, stats)
+
+    def _generate_trending_data(
+        self,
+        num_samples: int,
+        stats: Dict[str, float]
+    ) -> pd.DataFrame:
+        """Generate trending market data."""
+        # Generate trend component
+        trend = np.linspace(0, stats['mean_return'] * num_samples, num_samples)
+        
+        # Add noise
+        noise = np.random.normal(0, stats['volatility'] * 0.5, num_samples)
+        
+        # Combine trend and noise
+        returns = trend + noise
+        
+        # Convert to prices
+        prices = 100 * (1 + returns).cumprod()
+        
+        return self._create_ohlc_from_prices(prices)
+
+    def _generate_ranging_data(
+        self,
+        num_samples: int,
+        stats: Dict[str, float]
+    ) -> pd.DataFrame:
+        """Generate ranging market data."""
+        # Generate mean-reverting process
+        level = 100
+        prices = [level]
+        
+        for _ in range(num_samples - 1):
+            deviation = prices[-1] - level
+            mean_reversion = -0.1 * deviation
+            noise = np.random.normal(0, stats['volatility'])
+            new_price = prices[-1] + mean_reversion + noise
+            prices.append(new_price)
+        
+        return self._create_ohlc_from_prices(np.array(prices))
+
+    def _generate_volatile_data(
+        self,
+        num_samples: int,
+        stats: Dict[str, float]
+    ) -> pd.DataFrame:
+        """Generate volatile market data."""
+        # Generate GARCH-like process
+        returns = []
+        volatility = stats['volatility']
+        
+        for _ in range(num_samples):
+            shock = np.random.normal(0, 1)
+            volatility = np.sqrt(0.1 + 0.8 * volatility**2 + 0.1 * shock**2)
+            returns.append(shock * volatility)
+        
+        prices = 100 * (1 + np.array(returns)).cumprod()
+        return self._create_ohlc_from_prices(prices)
+
+    def _generate_adversarial_patterns(
+        self,
+        base_data: pd.DataFrame,
+        num_samples: int,
+        regime_stats: Dict[str, Dict[str, float]]
+    ) -> pd.DataFrame:
+        """Generate adversarial patterns that challenge trading systems."""
+        patterns = []
+        
+        # Generate false breakouts
+        breakout_samples = int(num_samples * 0.3)
+        patterns.append(self._generate_false_breakouts(breakout_samples, regime_stats))
+        
+        # Generate stop-hunting patterns
+        hunt_samples = int(num_samples * 0.3)
+        patterns.append(self._generate_stop_hunting(hunt_samples, regime_stats))
+        
+        # Generate complex price patterns
+        complex_samples = int(num_samples * 0.4)
+        patterns.append(self._generate_complex_patterns(complex_samples, regime_stats))
+        
+        return pd.concat(patterns)
+
+    def _add_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add market microstructure features to synthetic data."""
+        # Add bid-ask spread
+        df['spread'] = np.random.exponential(0.0001, len(df))
+        
+        # Add tick volume
+        df['tick_volume'] = np.random.poisson(100, len(df))
+        
+        # Add order flow imbalance
+        df['order_imbalance'] = np.random.normal(0, 1, len(df))
+        
+        return df
+
+    def _validate_synthetic_data(
+        self,
+        synthetic_df: pd.DataFrame,
+        base_data: pd.DataFrame
+    ) -> pd.DataFrame:
+        """Validate synthetic data quality and adjust if needed."""
+        # Check statistical properties
+        synthetic_returns = synthetic_df['close'].pct_change().dropna()
+        base_returns = base_data['close'].pct_change().dropna()
+        
+        # Adjust if statistics deviate too much
+        if abs(synthetic_returns.std() - base_returns.std()) > 0.1:
+            synthetic_df['close'] = synthetic_df['close'] * (base_returns.std() / synthetic_returns.std())
+        
+        # Ensure no negative prices
+        synthetic_df.loc[synthetic_df['close'] <= 0, 'close'] = base_data['close'].mean()
+        
+        return synthetic_df
+
+    def _create_ohlc_from_prices(self, prices: np.ndarray) -> pd.DataFrame:
+        """Create OHLC data from price series."""
+        df = pd.DataFrame({
+            'timestamp': pd.date_range(start=pd.Timestamp.now(), periods=len(prices), freq='1min'),
             'close': prices
         })
+        df.set_index('timestamp', inplace=True)
         
-        synthetic_df['open'] = synthetic_df['close'].shift(1)
-        synthetic_df['high'] = synthetic_df[['open', 'close']].max(axis=1) * (1 + np.random.uniform(0, 0.001, len(synthetic_df)))
-        synthetic_df['low'] = synthetic_df[['open', 'close']].min(axis=1) * (1 - np.random.uniform(0, 0.001, len(synthetic_df)))
-        synthetic_df['volume'] = np.random.lognormal(10, 1, len(synthetic_df))
+        # Generate realistic OHLC data
+        df['open'] = df['close'].shift(1)
+        df['high'] = df['close'] * (1 + np.random.uniform(0, 0.002, len(df)))
+        df['low'] = df['close'] * (1 - np.random.uniform(0, 0.002, len(df)))
+        df['volume'] = np.random.lognormal(10, 1, len(df))
         
-        synthetic_df.set_index('timestamp', inplace=True)
-        return synthetic_df
+        return df
 
     def _generate_trend_reversals(self, mean: float, std: float, samples: int) -> np.ndarray:
         """Generate trend reversal patterns."""
