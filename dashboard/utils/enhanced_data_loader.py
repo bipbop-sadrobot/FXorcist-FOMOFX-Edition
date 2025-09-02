@@ -434,7 +434,146 @@ class EnhancedDataLoader:
         complex_samples = int(num_samples * 0.4)
         patterns.append(self._generate_complex_patterns(complex_samples, regime_stats))
         
+        # Add cross-market correlations
+        correlated_data = self._apply_cross_market_correlations(pd.concat(patterns))
+        
+        return correlated_data
+
+    def _generate_false_breakouts(
+        self,
+        num_samples: int,
+        regime_stats: Dict[str, Dict[str, float]]
+    ) -> pd.DataFrame:
+        """Generate false breakout patterns."""
+        # Use trending regime stats for realistic breakout simulation
+        stats = regime_stats.get('trending', {'volatility': 0.01, 'mean_return': 0.001})
+        
+        prices = []
+        for _ in range(num_samples // 20):  # Generate in chunks
+            # Build up to breakout
+            buildup = np.linspace(0, 0.02, 10)  # Gradual increase
+            # False breakout
+            breakout = np.array([0.03, 0.035, 0.025, 0.015, 0.005])
+            # Reversal
+            reversal = np.array([-0.01, -0.02, -0.015, -0.01, -0.005])
+            
+            pattern = np.concatenate([buildup, breakout, reversal])
+            pattern = pattern * stats['volatility'] / pattern.std()
+            prices.extend(100 * (1 + pattern).cumprod())
+        
+        return self._create_ohlc_from_prices(np.array(prices[:num_samples]))
+
+    def _generate_stop_hunting(
+        self,
+        num_samples: int,
+        regime_stats: Dict[str, Dict[str, float]]
+    ) -> pd.DataFrame:
+        """Generate stop-hunting patterns."""
+        stats = regime_stats.get('volatile', {'volatility': 0.02, 'mean_return': 0})
+        
+        prices = []
+        for _ in range(num_samples // 15):  # Generate in chunks
+            # Initial move to set up stops
+            setup = np.linspace(0, -0.02, 5)  # Down move to place stops
+            # Hunt move
+            hunt = np.array([-0.03, -0.035, -0.02])  # Quick spike down
+            # Recovery
+            recovery = np.array([0.01, 0.02, 0.015, 0.01, 0.005, 0.002, 0])
+            
+            pattern = np.concatenate([setup, hunt, recovery])
+            pattern = pattern * stats['volatility'] / pattern.std()
+            prices.extend(100 * (1 + pattern).cumprod())
+        
+        return self._create_ohlc_from_prices(np.array(prices[:num_samples]))
+
+    def _generate_complex_patterns(
+        self,
+        num_samples: int,
+        regime_stats: Dict[str, Dict[str, float]]
+    ) -> pd.DataFrame:
+        """Generate complex price patterns."""
+        patterns = []
+        
+        # Head and shoulders pattern
+        head_shoulder_samples = int(num_samples * 0.4)
+        patterns.append(self._generate_head_shoulders(
+            head_shoulder_samples,
+            regime_stats.get('trending', {'volatility': 0.01})
+        ))
+        
+        # Double top/bottom pattern
+        double_pattern_samples = int(num_samples * 0.3)
+        patterns.append(self._generate_double_pattern(
+            double_pattern_samples,
+            regime_stats.get('ranging', {'volatility': 0.01})
+        ))
+        
+        # Triangle pattern
+        triangle_samples = int(num_samples * 0.3)
+        patterns.append(self._generate_triangle_pattern(
+            triangle_samples,
+            regime_stats.get('volatile', {'volatility': 0.02})
+        ))
+        
         return pd.concat(patterns)
+
+    def _generate_head_shoulders(
+        self,
+        num_samples: int,
+        stats: Dict[str, float]
+    ) -> pd.DataFrame:
+        """Generate head and shoulders pattern."""
+        prices = []
+        pattern_length = 20
+        
+        for _ in range(num_samples // pattern_length):
+            # Left shoulder
+            left_shoulder = np.concatenate([
+                np.linspace(0, 0.02, 3),
+                np.linspace(0.02, 0.01, 2)
+            ])
+            
+            # Head
+            head = np.concatenate([
+                np.linspace(0.01, 0.03, 4),
+                np.linspace(0.03, 0.01, 3)
+            ])
+            
+            # Right shoulder
+            right_shoulder = np.concatenate([
+                np.linspace(0.01, 0.02, 3),
+                np.linspace(0.02, -0.01, 5)
+            ])
+            
+            pattern = np.concatenate([left_shoulder, head, right_shoulder])
+            pattern = pattern * stats['volatility'] / pattern.std()
+            prices.extend(100 * (1 + pattern).cumprod())
+        
+        return self._create_ohlc_from_prices(np.array(prices[:num_samples]))
+
+    def _apply_cross_market_correlations(
+        self,
+        data: pd.DataFrame,
+        correlation_strength: float = 0.7
+    ) -> pd.DataFrame:
+        """Apply cross-market correlations to synthetic data."""
+        # Create correlated asset
+        returns = data['close'].pct_change().dropna()
+        
+        # Generate correlated returns
+        corr_noise = np.random.normal(0, 1, len(returns))
+        corr_returns = (
+            correlation_strength * returns +
+            np.sqrt(1 - correlation_strength**2) * corr_noise
+        )
+        
+        # Convert to prices
+        corr_prices = 100 * (1 + corr_returns).cumprod()
+        
+        # Add correlated asset
+        data['correlated_asset'] = corr_prices
+        
+        return data
 
     def _add_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add market microstructure features to synthetic data."""
