@@ -17,11 +17,45 @@ class TrainingMonitor(PerformanceComponent):
     """Component for monitoring and visualizing the training system."""
 
     def __init__(self, config: ComponentConfig):
-        """Initialize training monitor component."""
+        """Initialize training monitor component with real-time tracking."""
         super().__init__(config)
         self.models_dir = Path("models/trained")
         self.logs_dir = Path("logs")
         self.data_dir = Path("data/processed")
+        
+        # Initialize real-time tracking
+        if 'metrics_history' not in st.session_state:
+            st.session_state.metrics_history = {
+                'training_loss': [],
+                'validation_loss': [],
+                'learning_rate': [],
+                'gpu_memory': [],
+                'cpu_usage': [],
+                'memory_usage': [],
+                'batch_time': [],
+                'custom_metrics': {}
+            }
+        
+        # Training state
+        if 'training_state' not in st.session_state:
+            st.session_state.training_state = {
+                'active': False,
+                'current_epoch': 0,
+                'total_epochs': 0,
+                'model_type': 'CatBoost',
+                'optimizer': 'Adam',
+                'batch_size': 128
+            }
+        
+        # Visualization preferences
+        if 'viz_preferences' not in st.session_state:
+            st.session_state.viz_preferences = {
+                'update_interval': 5,
+                'show_history': True,
+                'history_window': 30,
+                'chart_type': 'Line',
+                'color_scheme': 'Default'
+            }
 
     def _get_system_metrics(self) -> Dict[str, int]:
         """Get current system metrics."""
@@ -51,47 +85,181 @@ class TrainingMonitor(PerformanceComponent):
         for improvement in improvements:
             st.success(improvement)
 
-    def _render_performance_metrics(self):
-        """Render key performance metrics."""
-        st.header("📊 System Metrics")
-
-        col1, col2 = st.columns(2)
+    def _render_real_time_metrics(self):
+        """Render real-time performance metrics with customizable display."""
+        st.header("📊 Real-time Metrics")
+        
+        # Metrics display settings
+        with st.expander("📈 Metrics Settings"):
+            col1, col2 = st.columns(2)
+            with col1:
+                update_interval = st.slider("Update Interval (s)", 1, 30, 
+                                         st.session_state.viz_preferences['update_interval'])
+                show_history = st.checkbox("Show History", 
+                                        st.session_state.viz_preferences['show_history'])
+            with col2:
+                if show_history:
+                    history_window = st.slider("History Window (min)", 5, 60, 
+                                            st.session_state.viz_preferences['history_window'])
+                chart_type = st.selectbox("Chart Type", ['Line', 'Area', 'Bar'],
+                                       index=['Line', 'Area', 'Bar'].index(
+                                           st.session_state.viz_preferences['chart_type']))
+        
+        # Display metrics in columns
+        col1, col2, col3 = st.columns(3)
+        
+        # Training metrics
         with col1:
-            st.metric("Model Accuracy", "87.3%", "↑ 12.1%")
-            st.metric("Training Speed", "2.3x", "↑ Faster")
-
+            if st.session_state.metrics_history['training_loss']:
+                current_loss = st.session_state.metrics_history['training_loss'][-1]
+                st.metric("Current Loss", f"{current_loss:.6f}")
+            
+            if st.session_state.metrics_history['batch_time']:
+                avg_time = sum(st.session_state.metrics_history['batch_time'][-10:]) / 10
+                st.metric("Avg Batch Time", f"{avg_time:.3f}s")
+        
+        # Resource metrics
         with col2:
-            st.metric("Features Used", "47", "↑ 35")
-            st.metric("Cross-val Score", "0.85", "↑ 0.15")
+            import psutil
+            cpu_usage = psutil.cpu_percent()
+            memory = psutil.Process().memory_info()
+            memory_usage = memory.rss / (1024 * 1024)  # MB
+            
+            st.metric("CPU Usage", f"{cpu_usage}%")
+            st.metric("Memory Usage", f"{memory_usage:.1f} MB")
+        
+        # GPU metrics if available
+        with col3:
+            import torch
+            if torch.cuda.is_available():
+                gpu_memory = torch.cuda.memory_allocated() / (1024 * 1024)  # MB
+                gpu_utilization = torch.cuda.utilization()
+                
+                st.metric("GPU Memory", f"{gpu_memory:.1f} MB")
+                st.metric("GPU Utilization", f"{gpu_utilization}%")
+        
+        # Historical metrics visualization
+        if show_history:
+            self._render_metrics_history(chart_type)
 
-    def _render_training_history(self):
-        """Render training history section."""
-        st.header("📈 Training History")
-
-        model_files = sorted(
-            list(self.models_dir.glob("*.cbm")) + 
-            list(self.models_dir.glob("*.pkl")) + 
-            list(self.models_dir.glob("*.json")),
-            key=lambda x: x.stat().st_mtime,
-            reverse=True
-        )[:5]
-
-        if model_files:
-            st.subheader("Recent Models")
-
-            model_data = []
-            for model_file in model_files:
-                model_data.append({
-                    'Model': model_file.stem,
-                    'Type': model_file.suffix,
-                    'Size (MB)': round(model_file.stat().st_size / (1024 * 1024), 2),
-                    'Created': datetime.fromtimestamp(model_file.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
-                })
-
-            if model_data:
-                st.dataframe(pd.DataFrame(model_data), use_container_width=True)
-        else:
-            st.info("No trained models found. Run the enhanced training pipeline to create models.")
+    def _render_training_controls(self):
+        """Render enhanced training controls with real-time parameter adjustment."""
+        st.header("🎮 Training Controls")
+        
+        # Training control tabs
+        control_tab, params_tab, advanced_tab = st.tabs([
+            "Basic Controls", "Training Parameters", "Advanced Settings"
+        ])
+        
+        with control_tab:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                if st.button("Start Training", 
+                           disabled=st.session_state.training_state['active']):
+                    st.session_state.training_state['active'] = True
+                    st.session_state.training_state['current_epoch'] = 0
+            
+            with col2:
+                if st.button("Pause", 
+                           disabled=not st.session_state.training_state['active']):
+                    st.session_state.training_state['active'] = False
+            
+            with col3:
+                if st.button("Resume", 
+                           disabled=not st.session_state.training_state['active']):
+                    st.session_state.training_state['active'] = True
+        
+        with params_tab:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                model_type = st.selectbox(
+                    "Model Architecture",
+                    ["CatBoost", "XGBoost", "LightGBM", "Ensemble"],
+                    index=["CatBoost", "XGBoost", "LightGBM", "Ensemble"].index(
+                        st.session_state.training_state['model_type'])
+                )
+                
+                learning_rate = st.slider(
+                    "Learning Rate",
+                    min_value=0.0001,
+                    max_value=0.1,
+                    value=0.01,
+                    format="%.4f"
+                )
+                
+                batch_size = st.select_slider(
+                    "Batch Size",
+                    options=[32, 64, 128, 256, 512],
+                    value=st.session_state.training_state['batch_size']
+                )
+            
+            with col2:
+                optimizer = st.selectbox(
+                    "Optimizer",
+                    ["Adam", "SGD", "RMSprop", "AdamW"],
+                    index=["Adam", "SGD", "RMSprop", "AdamW"].index(
+                        st.session_state.training_state['optimizer'])
+                )
+                
+                epochs = st.number_input(
+                    "Number of Epochs",
+                    min_value=1,
+                    value=st.session_state.training_state['total_epochs'] or 100
+                )
+                
+                early_stopping = st.number_input(
+                    "Early Stopping Patience",
+                    min_value=0,
+                    value=10
+                )
+        
+        with advanced_tab:
+            with st.expander("Optimization Settings"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    use_amp = st.checkbox("Use Mixed Precision", True)
+                    use_gradient_clipping = st.checkbox("Enable Gradient Clipping")
+                    if use_gradient_clipping:
+                        clip_value = st.slider("Clip Value", 0.1, 10.0, 1.0)
+                
+                with col2:
+                    scheduler = st.selectbox(
+                        "LR Scheduler",
+                        ["None", "CosineAnnealing", "ReduceLROnPlateau", "OneCycle"]
+                    )
+                    if scheduler != "None":
+                        warmup_epochs = st.slider("Warmup Epochs", 0, 10, 3)
+            
+            with st.expander("Feature Engineering"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    feature_selection = st.multiselect(
+                        "Feature Selection Methods",
+                        ["Correlation", "Mutual Information", "SHAP", "Permutation"],
+                        ["Correlation", "SHAP"]
+                    )
+                    
+                    min_feature_importance = st.slider(
+                        "Min Feature Importance",
+                        0.0, 1.0, 0.01
+                    )
+                
+                with col2:
+                    use_pca = st.checkbox("Use PCA")
+                    if use_pca:
+                        n_components = st.slider(
+                            "Number of Components",
+                            2, 50, 10
+                        )
+                    
+                    scaling_method = st.selectbox(
+                        "Feature Scaling",
+                        ["StandardScaler", "MinMaxScaler", "RobustScaler"]
+                    )
 
     def _render_feature_engineering(self):
         """Render feature engineering showcase."""
