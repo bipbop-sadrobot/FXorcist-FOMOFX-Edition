@@ -652,26 +652,190 @@ class AutomatedTrainingPipeline:
             'feature_importance': self._get_feature_importance(model, feature_names)
         }
 
-    def _create_ensemble_model(
+    def _validate_data_quality(self, data: pd.DataFrame) -> Dict[str, float]:
+        """Validate data quality with comprehensive metrics."""
+        metrics = {}
+        
+        # Statistical validation
+        returns = data['close'].pct_change().dropna()
+        metrics.update({
+            'stationarity_score': self._calculate_stationarity_score(returns),
+            'normality_score': self._calculate_normality_score(returns),
+            'seasonality_score': self._calculate_seasonality_score(returns)
+        })
+        
+        # Pattern diversity
+        metrics.update({
+            'pattern_coverage': self._calculate_pattern_coverage(data),
+            'regime_diversity': self._calculate_regime_diversity(data),
+            'edge_case_coverage': self._calculate_edge_case_coverage(data)
+        })
+        
+        # Data consistency
+        metrics.update({
+            'missing_data_ratio': data.isnull().mean().mean(),
+            'data_freshness': self._calculate_data_freshness(data),
+            'data_consistency': self._validate_ohlc_consistency(data)
+        })
+        
+        return metrics
+
+    def _validate_training_efficiency(self, metrics: Dict[str, Any]) -> Dict[str, float]:
+        """Validate training efficiency metrics."""
+        efficiency_metrics = {}
+        
+        # Time efficiency
+        efficiency_metrics.update({
+            'training_speed': len(metrics['training_history']) / metrics['training_time'],
+            'convergence_rate': self._calculate_convergence_rate(metrics['training_history']),
+            'optimization_efficiency': self._calculate_optimization_efficiency(metrics)
+        })
+        
+        # Resource utilization
+        efficiency_metrics.update({
+            'memory_efficiency': self._calculate_memory_efficiency(metrics),
+            'gpu_utilization': self._calculate_gpu_utilization(metrics),
+            'cpu_efficiency': self._calculate_cpu_efficiency(metrics)
+        })
+        
+        # Cache performance
+        efficiency_metrics.update({
+            'cache_hit_rate': metrics['cache_stats']['hits'] / (metrics['cache_stats']['hits'] + metrics['cache_stats']['misses']),
+            'cache_memory_efficiency': self._calculate_cache_efficiency(metrics),
+            'data_throughput': self._calculate_data_throughput(metrics)
+        })
+        
+        return efficiency_metrics
+
+    def _validate_model_performance(self, model: Any, data: pd.DataFrame) -> Dict[str, float]:
+        """Validate model performance comprehensively."""
+        performance_metrics = {}
+        
+        # Cross-validation performance
+        cv_scores = self._perform_cross_validation(model, data)
+        performance_metrics.update({
+            'cv_mean_score': np.mean(cv_scores),
+            'cv_std_score': np.std(cv_scores),
+            'cv_stability': self._calculate_cv_stability(cv_scores)
+        })
+        
+        # Out-of-sample performance
+        oos_metrics = self._evaluate_out_of_sample(model, data)
+        performance_metrics.update(oos_metrics)
+        
+        # Feature stability
+        feature_metrics = self._evaluate_feature_stability(model, data)
+        performance_metrics.update(feature_metrics)
+        
+        return performance_metrics
+
+    def _validate_resource_utilization(self) -> Dict[str, float]:
+        """Validate resource utilization efficiency."""
+        metrics = {}
+        
+        # Memory utilization
+        process = psutil.Process()
+        metrics['memory_usage'] = process.memory_info().rss / (1024 * 1024)  # MB
+        metrics['memory_efficiency'] = self._calculate_memory_efficiency_score()
+        
+        # CPU utilization
+        metrics['cpu_usage'] = psutil.cpu_percent(interval=1)
+        metrics['cpu_efficiency'] = self._calculate_cpu_efficiency_score()
+        
+        # GPU utilization if available
+        if torch.cuda.is_available():
+            metrics['gpu_memory'] = torch.cuda.memory_allocated() / (1024 * 1024)  # MB
+            metrics['gpu_utilization'] = torch.cuda.utilization()
+        
+        # I/O operations
+        io_counters = psutil.disk_io_counters()
+        metrics['io_read_mb'] = io_counters.read_bytes / (1024 * 1024)
+        metrics['io_write_mb'] = io_counters.write_bytes / (1024 * 1024)
+        
+        return metrics
+
+    def _calculate_synthesis_quality(
         self,
-        results: Dict[str, Dict],
-        dataset: torch.utils.data.DataLoader
-    ) -> Dict[str, Any]:
-        """Create an ensemble model from the best performing models."""
-        # Select best models based on validation performance
-        best_models = self._select_best_models(results)
+        synthetic_data: pd.DataFrame,
+        base_data: pd.DataFrame
+    ) -> Dict[str, float]:
+        """Calculate quality metrics for synthetic data."""
+        metrics = {}
         
-        # Create ensemble
-        ensemble = self._create_weighted_ensemble(best_models)
+        # Statistical similarity
+        metrics['statistical_similarity'] = self._calculate_statistical_similarity(
+            synthetic_data, base_data
+        )
         
-        # Evaluate ensemble
-        ensemble_metrics = self._evaluate_ensemble(ensemble, dataset)
+        # Pattern quality
+        metrics['pattern_quality'] = self._calculate_pattern_quality(synthetic_data)
         
-        return {
-            'model': ensemble,
-            'metrics': ensemble_metrics,
-            'component_models': [model.name for model in best_models]
-        }
+        # Edge case coverage
+        metrics['edge_case_coverage'] = self._calculate_edge_case_coverage(synthetic_data)
+        
+        # Diversity metrics
+        metrics['pattern_diversity'] = self._calculate_pattern_diversity(synthetic_data)
+        metrics['regime_coverage'] = self._calculate_regime_coverage(synthetic_data)
+        
+        # Realism score
+        metrics['realism_score'] = self._calculate_realism_score(
+            synthetic_data, base_data
+        )
+        
+        return metrics
+
+    def _get_optimizer(self, model: Any, config: Dict[str, Any]) -> torch.optim.Optimizer:
+        """Get optimizer with configured parameters."""
+        if hasattr(model, 'parameters'):
+            if config.get('optimizer', 'adam').lower() == 'adam':
+                return torch.optim.Adam(
+                    model.parameters(),
+                    lr=config.get('learning_rate', 0.001),
+                    weight_decay=config.get('weight_decay', 0.0)
+                )
+            elif config.get('optimizer', 'adam').lower() == 'sgd':
+                return torch.optim.SGD(
+                    model.parameters(),
+                    lr=config.get('learning_rate', 0.01),
+                    momentum=config.get('momentum', 0.9),
+                    weight_decay=config.get('weight_decay', 0.0)
+                )
+        return None
+
+    def _get_scheduler(
+        self,
+        optimizer: torch.optim.Optimizer,
+        config: Dict[str, Any]
+    ) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
+        """Get learning rate scheduler."""
+        if optimizer is None:
+            return None
+            
+        schedule_type = config.get('learning_rate_schedule', 'cosine')
+        
+        if schedule_type == 'cosine':
+            return torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=config.get('max_epochs', 1000),
+                eta_min=config.get('min_lr', 1e-6)
+            )
+        elif schedule_type == 'reduce_on_plateau':
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=0.5,
+                patience=config.get('lr_patience', 10),
+                min_lr=config.get('min_lr', 1e-6)
+            )
+        elif schedule_type == 'one_cycle':
+            return torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=config.get('max_lr', 0.1),
+                epochs=config.get('max_epochs', 1000),
+                steps_per_epoch=config.get('steps_per_epoch', 100)
+            )
+        
+        return None
 
     def train_catboost_model(self, X_train, X_test, y_train, y_test):
         """Train CatBoost model."""
