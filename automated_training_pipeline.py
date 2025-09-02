@@ -1,0 +1,508 @@
+#!/usr/bin/env python3
+"""
+Automated Forex AI Training Pipeline
+Downloads data, processes it, and trains models automatically.
+"""
+
+import pandas as pd
+import numpy as np
+import os
+import sys
+import subprocess
+import logging
+import psutil
+import concurrent.futures
+import torch
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional, Tuple
+import asyncio
+import json
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from memory_profiler import profile
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("logs/automated_training.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class AutomatedTrainingPipeline:
+    """Automated pipeline for forex data download, processing, and model training."""
+
+    def __init__(self):
+        self.project_root = Path(__file__).parent
+        self.data_dir = self.project_root / "data"
+        self.models_dir = self.project_root / "models" / "trained"
+        self.logs_dir = self.project_root / "logs"
+        
+        # Initialize GPU if available
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.num_workers = os.cpu_count()
+        
+        # Performance monitoring
+        self.metrics = {
+            'data_processing_time': 0,
+            'training_time': 0,
+            'peak_memory_usage': 0,
+            'gpu_memory_usage': 0 if torch.cuda.is_available() else None
+        }
+
+        # Create directories
+        for dir_path in [self.data_dir, self.models_dir, self.logs_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+
+        # Forex symbols to download
+        self.symbols = [
+            "EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD",
+            "USDCHF", "NZDUSD", "EURGBP", "EURJPY", "GBPJPY"
+        ]
+
+        # Years to download (2020-2024 for comprehensive training)
+        self.years = list(range(2020, 2025))
+
+        # Months (1-12)
+        self.months = list(range(1, 13))
+
+    async def download_data_batch(self, symbols: List[str], year: int) -> bool:
+        """Download data for multiple symbols for a specific year."""
+        logger.info(f"Downloading data for {symbols} in {year}")
+
+        success_count = 0
+        for symbol in symbols:
+            try:
+                # Run the fetch script for each symbol and month
+                for month in self.months:
+                    cmd = [
+                        "bash", "scripts/fetch_data.sh",
+                        "--source", "histdata",
+                        "--symbols", symbol,
+                        "--year", str(year),
+                        "--month", str(month)
+                    ]
+
+                    result = subprocess.run(
+                        cmd,
+                        cwd=self.project_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+
+                    if result.returncode == 0:
+                        logger.info(f"✅ Downloaded {symbol} {year}-{month:02d}")
+                        success_count += 1
+                    else:
+                        logger.warning(f"❌ Failed {symbol} {year}-{month:02d}: {result.stderr}")
+
+                await asyncio.sleep(1)  # Rate limiting
+
+            except subprocess.TimeoutExpired:
+                logger.error(f"Timeout downloading {symbol} {year}")
+            except Exception as e:
+                logger.error(f"Error downloading {symbol} {year}: {str(e)}")
+
+        return success_count > 0
+
+    async def download_all_data(self) -> bool:
+        """Download comprehensive forex data."""
+        logger.info("Starting comprehensive data download")
+
+        total_downloads = 0
+        successful_downloads = 0
+
+        # Download in batches to avoid overwhelming the server
+        batch_size = 3
+        for i in range(0, len(self.symbols), batch_size):
+            symbol_batch = self.symbols[i:i + batch_size]
+
+            for year in self.years:
+                success = await self.download_data_batch(symbol_batch, year)
+                if success:
+                    successful_downloads += len(symbol_batch)
+                total_downloads += len(symbol_batch)
+
+                # Progress logging
+                progress = (successful_downloads / total_downloads) * 100
+                logger.info(".1f")
+
+        logger.info(f"Data download complete: {successful_downloads}/{total_downloads} successful")
+        return successful_downloads > 0
+
+    def _process_symbol_data(self, symbol: str) -> Optional[pd.DataFrame]:
+        """Process data for a single symbol using parallel processing."""
+        symbol_data = []
+        
+        with ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+            futures = []
+            for year in self.years:
+                for month in self.months:
+                    csv_path = self.data_dir / "raw" / "histdata" / symbol / str(year) / f"{month:02d}.csv"
+                    if csv_path.exists():
+                        futures.append(executor.submit(pd.read_csv, csv_path))
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    df = future.result()
+                    df['symbol'] = symbol
+                    symbol_data.append(df)
+                except Exception as e:
+                    logger.warning(f"Error loading data for {symbol}: {str(e)}")
+        
+        if symbol_data:
+            return pd.concat(symbol_data, ignore_index=True)
+        return None
+
+    def process_data(self) -> Optional[pd.DataFrame]:
+        """Process and combine all downloaded forex data using parallel processing."""
+        logger.info("Starting parallel data processing")
+        start_time = datetime.now()
+        
+        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+            symbol_futures = {executor.submit(self._process_symbol_data, symbol): symbol 
+                            for symbol in self.symbols}
+            
+            all_data = []
+            for future in concurrent.futures.as_completed(symbol_futures):
+                symbol = symbol_futures[future]
+                try:
+                    symbol_df = future.result()
+                    if symbol_df is not None:
+                        all_data.append(symbol_df)
+                        logger.info(f"Processed {symbol}: {len(symbol_df)} rows")
+                except Exception as e:
+                    logger.error(f"Error processing {symbol}: {str(e)}")
+
+        if not all_data:
+            logger.error("No data found to process")
+            return None
+
+        # Combine all symbols
+        combined_df = pd.concat(all_data, ignore_index=True)
+        logger.info(f"Total combined data: {len(combined_df)} rows")
+
+        # Basic preprocessing
+        combined_df = self.preprocess_data(combined_df)
+
+        # Save processed data
+        output_path = self.data_dir / "processed" / "comprehensive_forex_data.parquet"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        combined_df.to_parquet(output_path)
+
+        logger.info(f"Saved processed data to {output_path}")
+        return combined_df
+
+    def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Preprocess the combined forex data."""
+        logger.info("Preprocessing data")
+
+        # Convert timestamp if needed
+        if 'timestamp' not in df.columns:
+            # Assume first column is timestamp
+            timestamp_col = df.columns[0]
+            df = df.rename(columns={timestamp_col: 'timestamp'})
+
+        # Ensure timestamp is datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        df = df.dropna(subset=['timestamp'])
+
+        # Sort by timestamp
+        df = df.sort_values('timestamp').reset_index(drop=True)
+
+        # Add technical indicators
+        df = self.add_technical_indicators(df)
+
+        # Remove duplicates
+        df = df.drop_duplicates(subset=['timestamp', 'symbol'])
+
+        logger.info(f"Preprocessed data: {len(df)} rows, {len(df.columns)} columns")
+        return df
+
+    def _calculate_indicators_batch(self, group_data: Tuple[str, pd.DataFrame]) -> pd.DataFrame:
+        """Calculate technical indicators for a batch of data."""
+        symbol, group = group_data
+        df = group.copy()
+        
+        # Optimize calculations using vectorized operations
+        close = df['close'].values
+        high = df['high'].values
+        low = df['low'].values
+        
+        # Calculate indicators using NumPy for better performance
+        df['returns'] = np.diff(close, prepend=close[0])
+        df['log_returns'] = np.log(close[1:] / close[:-1])
+        
+        # Moving averages using convolution
+        window_sizes = [5, 10, 20, 50, 100]
+        for size in window_sizes:
+            df[f'sma_{size}'] = pd.Series(close).rolling(size).mean().values
+            df[f'ema_{size}'] = pd.Series(close).ewm(span=size).mean().values
+        
+        # Volatility indicators
+        df['atr'] = pd.Series(high - low).rolling(14).mean().values
+        df['volatility'] = pd.Series(df['returns']).rolling(20).std().values
+        
+        # Momentum indicators
+        df['rsi'] = self._calculate_rsi(close)
+        df['macd'], df['macd_signal'] = self._calculate_macd(close)
+        
+        # Volume-based indicators (if volume data available)
+        if 'volume' in df.columns:
+            df['volume_sma'] = pd.Series(df['volume']).rolling(20).mean().values
+            df['volume_ratio'] = df['volume'] / df['volume_sma']
+        
+        return df
+
+    def add_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add technical indicators using parallel processing."""
+        logger.info("Adding technical indicators in parallel")
+        
+        # Split data by symbol for parallel processing
+        grouped_data = [(symbol, group) for symbol, group in df.groupby('symbol')]
+        
+        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+            results = list(executor.map(self._calculate_indicators_batch, grouped_data))
+        
+        return pd.concat(results, ignore_index=True)
+
+        # Fill NaN values
+        df = df.fillna(method='bfill').fillna(method='ffill')
+
+        return df
+
+    def train_models(self, df: pd.DataFrame) -> Dict[str, Dict]:
+        """Train multiple models with GPU acceleration and parallel processing."""
+        logger.info("Starting model training with GPU support")
+        start_time = datetime.now()
+
+        # Monitor memory usage
+        process = psutil.Process(os.getpid())
+        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
+
+        results = {}
+
+        # Enhanced feature selection
+        feature_cols = self._select_features(df)
+        df['target'] = df['close'].shift(-1)
+        df = df.dropna()
+
+        # Convert to GPU tensors if available
+        X = torch.tensor(df[feature_cols].values, dtype=torch.float32, device=self.device)
+        y = torch.tensor(df['target'].values, dtype=torch.float32, device=self.device)
+
+        # Time series split for more robust evaluation
+        split_idx = int(len(X) * 0.8)
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
+
+        # Track memory usage
+        current_memory = process.memory_info().rss / 1024 / 1024
+        self.metrics['peak_memory_usage'] = max(current_memory - initial_memory, 0)
+        
+        if torch.cuda.is_available():
+            self.metrics['gpu_memory_usage'] = torch.cuda.max_memory_allocated() / 1024 / 1024  # MB
+
+        logger.info(f"Train set: {len(X_train)} samples")
+        logger.info(f"Test set: {len(X_test)} samples")
+
+        # Train CatBoost model
+        results['catboost'] = self.train_catboost_model(X_train, X_test, y_train, y_test)
+
+        # Train additional models if available
+        try:
+            from xgboost import XGBRegressor
+            results['xgboost'] = self.train_xgboost_model(X_train, X_test, y_train, y_test)
+        except ImportError:
+            logger.warning("XGBoost not available, skipping")
+
+        # Save training summary
+        self.save_training_summary(results)
+
+        return results
+
+    def train_catboost_model(self, X_train, X_test, y_train, y_test):
+        """Train CatBoost model."""
+        logger.info("Training CatBoost model")
+
+        from catboost import CatBoostRegressor
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+        model = CatBoostRegressor(
+            iterations=500,
+            learning_rate=0.05,
+            depth=6,
+            loss_function='RMSE',
+            random_seed=42,
+            verbose=False
+        )
+
+        start_time = datetime.now()
+        model.fit(X_train, y_train)
+        training_time = (datetime.now() - start_time).total_seconds()
+
+        # Evaluate
+        y_pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+
+        # Save model
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_path = self.models_dir / f"catboost_comprehensive_{timestamp}.cbm"
+        model.save_model(str(model_path))
+
+        result = {
+            'model_path': str(model_path),
+            'training_time': training_time,
+            'metrics': {
+                'mse': mse,
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2
+            },
+            'feature_importance': model.feature_importances_.tolist(),
+            'feature_names': X_train.columns.tolist()
+        }
+
+        logger.info(".2f")
+        logger.info(".6f")
+        logger.info(".6f")
+        logger.info(".6f")
+        logger.info(".6f")
+
+        return result
+
+    def train_xgboost_model(self, X_train, X_test, y_train, y_test):
+        """Train XGBoost model."""
+        logger.info("Training XGBoost model")
+
+        from xgboost import XGBRegressor
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
+        model = XGBRegressor(
+            n_estimators=200,
+            learning_rate=0.1,
+            max_depth=6,
+            random_state=42,
+            verbosity=0
+        )
+
+        start_time = datetime.now()
+        model.fit(X_train, y_train)
+        training_time = (datetime.now() - start_time).total_seconds()
+
+        # Evaluate
+        y_pred = model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        rmse = np.sqrt(mse)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+
+        # Save model
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_path = self.models_dir / f"xgboost_comprehensive_{timestamp}.json"
+        model.save_model(str(model_path))
+
+        result = {
+            'model_path': str(model_path),
+            'training_time': training_time,
+            'metrics': {
+                'mse': mse,
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2
+            },
+            'feature_importance': model.feature_importances_.tolist(),
+            'feature_names': X_train.columns.tolist()
+        }
+
+        logger.info(".2f")
+        logger.info(".6f")
+        logger.info(".6f")
+        logger.info(".6f")
+        logger.info(".6f")
+
+        return result
+
+    def save_training_summary(self, results: Dict[str, Dict]):
+        """Save training summary."""
+        summary = {
+            'timestamp': datetime.now().isoformat(),
+            'models_trained': list(results.keys()),
+            'results': results
+        }
+
+        summary_path = self.logs_dir / f"training_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2, default=str)
+
+        logger.info(f"Training summary saved to {summary_path}")
+
+    async def run_automated_pipeline(self):
+        """Run the complete automated pipeline."""
+        logger.info("🚀 Starting Automated Forex AI Training Pipeline")
+
+        try:
+            # Step 1: Download data
+            logger.info("📥 Step 1: Downloading comprehensive forex data")
+            download_success = await self.download_all_data()
+
+            if not download_success:
+                logger.warning("Data download had issues, proceeding with existing data")
+
+            # Step 2: Process data
+            logger.info("🔄 Step 2: Processing and combining data")
+            processed_data = self.process_data()
+
+            if processed_data is None or len(processed_data) == 0:
+                logger.error("No data available for training")
+                return False
+
+            # Step 3: Train models
+            logger.info("🤖 Step 3: Training ML models")
+            training_results = self.train_models(processed_data)
+
+            # Step 4: Summary
+            logger.info("✅ Pipeline completed successfully!")
+            logger.info(f"📊 Data processed: {len(processed_data)} rows")
+            logger.info(f"🎯 Models trained: {len(training_results)}")
+
+            for model_name, result in training_results.items():
+                logger.info(f"  • {model_name}: R² = {result['metrics']['r2']:.6f}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Pipeline failed: {str(e)}", exc_info=True)
+            return False
+
+def main():
+    """Main function to run the automated pipeline."""
+    pipeline = AutomatedTrainingPipeline()
+
+    # Run the async pipeline
+    success = asyncio.run(pipeline.run_automated_pipeline())
+
+    if success:
+        print("\n" + "="*60)
+        print("🎉 AUTOMATED TRAINING PIPELINE COMPLETED SUCCESSFULLY!")
+        print("="*60)
+        print("📁 Check the following directories for results:")
+        print("  • Models: models/trained/")
+        print("  • Processed data: data/processed/")
+        print("  • Logs: logs/")
+        print("="*60)
+    else:
+        print("\n" + "="*60)
+        print("❌ AUTOMATED TRAINING PIPELINE FAILED")
+        print("="*60)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
