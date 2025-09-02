@@ -695,6 +695,412 @@ class TrainingMonitor(PerformanceComponent):
             smoothed.append(smoothed[-1] * factor + data[n] * (1 - factor))
         return smoothed
 
+    def _create_progress_chart(
+        self,
+        training_loss: List[float],
+        validation_loss: List[float]
+    ) -> go.Figure:
+        """Create interactive training progress chart."""
+        fig = go.Figure()
+        
+        # Apply smoothing if enabled
+        smoothing = st.session_state.viz_preferences.get('smoothing', 0.6)
+        if smoothing > 0:
+            training_loss = self._apply_smoothing(training_loss, smoothing)
+            validation_loss = self._apply_smoothing(validation_loss, smoothing)
+        
+        # Add traces
+        fig.add_trace(go.Scatter(
+            y=training_loss,
+            name='Training Loss',
+            mode='lines',
+            line=dict(color='blue')
+        ))
+        
+        fig.add_trace(go.Scatter(
+            y=validation_loss,
+            name='Validation Loss',
+            mode='lines',
+            line=dict(color='red')
+        ))
+        
+        # Update layout
+        fig.update_layout(
+            title='Training Progress',
+            xaxis_title='Iteration',
+            yaxis_title='Loss',
+            hovermode='x unified',
+            showlegend=True
+        )
+        
+        return fig
+
+    def _calculate_synthesis_stats(self, data: pd.DataFrame) -> Dict[str, float]:
+        """Calculate statistics for synthetic data."""
+        stats = {}
+        
+        # Count edge cases
+        returns = data['close'].pct_change()
+        volatility = returns.rolling(20).std()
+        
+        stats['edge_cases'] = len(data[
+            (returns.abs() > returns.std() * 3) |  # Price jumps
+            (volatility > volatility.quantile(0.95))  # High volatility
+        ])
+        
+        # Calculate pattern quality score
+        pattern_scores = []
+        
+        # Check for trend consistency
+        trend_consistency = np.corrcoef(
+            data.index,
+            data['close'].values
+        )[0, 1]
+        pattern_scores.append(abs(trend_consistency))
+        
+        # Check for realistic volatility
+        vol_score = 1 - abs(
+            volatility.mean() - returns.std()
+        ) / returns.std()
+        pattern_scores.append(vol_score)
+        
+        # Check for realistic correlations
+        if 'correlated_asset' in data.columns:
+            corr_score = abs(
+                data['close'].corr(data['correlated_asset']) - 0.7
+            )
+            pattern_scores.append(1 - corr_score)
+        
+        stats['quality_score'] = np.mean(pattern_scores)
+        
+        return stats
+
+    def _create_pattern_visualization(self, data: pd.DataFrame) -> go.Figure:
+        """Create interactive pattern visualization."""
+        fig = go.Figure()
+        
+        # Add candlestick chart
+        fig.add_trace(go.Candlestick(
+            x=data.index,
+            open=data['open'],
+            high=data['high'],
+            low=data['low'],
+            close=data['close'],
+            name='Price'
+        ))
+        
+        # Add volume bars
+        fig.add_trace(go.Bar(
+            x=data.index,
+            y=data['volume'],
+            name='Volume',
+            yaxis='y2',
+            opacity=0.3
+        ))
+        
+        # Add technical indicators
+        if 'sma_20' in data.columns:
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=data['sma_20'],
+                name='20 SMA',
+                line=dict(color='orange')
+            ))
+        
+        if 'bollinger_upper' in data.columns:
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=data['bollinger_upper'],
+                name='Bollinger Upper',
+                line=dict(color='gray', dash='dash')
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=data.index,
+                y=data['bollinger_lower'],
+                name='Bollinger Lower',
+                line=dict(color='gray', dash='dash'),
+                fill='tonexty'
+            ))
+        
+        # Update layout
+        fig.update_layout(
+            title='Synthetic Price Patterns',
+            yaxis_title='Price',
+            yaxis2=dict(
+                title='Volume',
+                overlaying='y',
+                side='right'
+            ),
+            xaxis_rangeslider_visible=False
+        )
+        
+        return fig
+
+    def _create_distribution_plots(self, data: pd.DataFrame) -> go.Figure:
+        """Create distribution analysis plots."""
+        fig = go.Figure()
+        
+        # Returns distribution
+        returns = data['close'].pct_change().dropna()
+        
+        fig.add_trace(go.Histogram(
+            x=returns,
+            name='Returns Distribution',
+            nbinsx=50,
+            opacity=0.7
+        ))
+        
+        # Add normal distribution for comparison
+        x = np.linspace(returns.min(), returns.max(), 100)
+        y = stats.norm.pdf(x, returns.mean(), returns.std())
+        fig.add_trace(go.Scatter(
+            x=x,
+            y=y,
+            name='Normal Distribution',
+            line=dict(color='red', dash='dash')
+        ))
+        
+        # Update layout
+        fig.update_layout(
+            title='Returns Distribution Analysis',
+            xaxis_title='Returns',
+            yaxis_title='Frequency',
+            showlegend=True
+        )
+        
+        return fig
+
+    def _render_quality_metrics(self, data: pd.DataFrame):
+        """Render synthetic data quality metrics."""
+        st.subheader("Quality Metrics")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Statistical properties
+            returns = data['close'].pct_change().dropna()
+            
+            st.metric("Mean Return", f"{returns.mean():.6f}")
+            st.metric("Volatility", f"{returns.std():.6f}")
+            st.metric("Skewness", f"{returns.skew():.2f}")
+            st.metric("Kurtosis", f"{returns.kurtosis():.2f}")
+        
+        with col2:
+            # Pattern metrics
+            st.metric(
+                "Trend Strength",
+                f"{abs(returns.autocorr()):.2f}",
+                help="Autocorrelation of returns"
+            )
+            
+            # Volatility clustering
+            vol_cluster = returns.abs().autocorr()
+            st.metric(
+                "Volatility Clustering",
+                f"{vol_cluster:.2f}",
+                help="Presence of volatility clusters"
+            )
+            
+            # Market efficiency
+            hurst = self._calculate_hurst_exponent(returns)
+            st.metric(
+                "Market Efficiency",
+                f"{hurst:.2f}",
+                help="Hurst exponent (0.5 = efficient market)"
+            )
+
+    def _calculate_efficiency_metrics(self) -> Dict[str, float]:
+        """Calculate algorithmic efficiency metrics."""
+        metrics = {}
+        
+        # Calculate training speed
+        batch_times = st.session_state.metrics_history['batch_time']
+        if batch_times:
+            recent_time = np.mean(batch_times[-50:])
+            old_time = np.mean(batch_times[-100:-50]) if len(batch_times) > 100 else recent_time
+            
+            metrics['samples_per_second'] = 1 / recent_time
+            metrics['speed_improvement'] = ((old_time - recent_time) / old_time) * 100
+        else:
+            metrics['samples_per_second'] = 0
+            metrics['speed_improvement'] = 0
+        
+        # Calculate memory efficiency
+        memory_usage = st.session_state.metrics_history['memory_usage']
+        if memory_usage:
+            current_memory = memory_usage[-1]
+            peak_memory = max(memory_usage)
+            baseline_memory = memory_usage[0]
+            
+            metrics['memory_per_sample'] = current_memory / len(batch_times) if batch_times else 0
+            metrics['memory_improvement'] = ((peak_memory - current_memory) / peak_memory) * 100
+        else:
+            metrics['memory_per_sample'] = 0
+            metrics['memory_improvement'] = 0
+        
+        # Calculate GPU efficiency
+        if torch.cuda.is_available():
+            metrics['gpu_utilization'] = torch.cuda.utilization()
+            metrics['gpu_improvement'] = 0  # Need historical data for improvement
+        else:
+            metrics['gpu_utilization'] = 0
+            metrics['gpu_improvement'] = 0
+        
+        return metrics
+
+    def _create_efficiency_chart(self, metric_type: str) -> go.Figure:
+        """Create efficiency analysis chart."""
+        fig = go.Figure()
+        
+        if metric_type == 'Training Speed':
+            y = [1/t for t in st.session_state.metrics_history['batch_time']]
+            name = 'Samples/second'
+        elif metric_type == 'Memory Usage':
+            y = st.session_state.metrics_history['memory_usage']
+            name = 'Memory (MB)'
+        else:  # GPU Utilization
+            y = st.session_state.metrics_history['gpu_memory']
+            name = 'GPU Memory (MB)'
+        
+        # Add main metric
+        fig.add_trace(go.Scatter(
+            y=y,
+            name=name,
+            mode='lines'
+        ))
+        
+        # Add trend line
+        if len(y) > 1:
+            z = np.polyfit(range(len(y)), y, 1)
+            p = np.poly1d(z)
+            fig.add_trace(go.Scatter(
+                y=p(range(len(y))),
+                name='Trend',
+                line=dict(dash='dash')
+            ))
+        
+        # Update layout
+        fig.update_layout(
+            title=f'{metric_type} Over Time',
+            xaxis_title='Iteration',
+            yaxis_title=name,
+            showlegend=True
+        )
+        
+        return fig
+
+    def _render_resource_monitor(self):
+        """Render resource usage monitoring."""
+        st.subheader("💻 Resource Monitor")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        # System resources
+        with col1:
+            cpu_percent = psutil.cpu_percent()
+            memory = psutil.virtual_memory()
+            
+            st.metric(
+                "CPU Usage",
+                f"{cpu_percent}%",
+                delta=f"{cpu_percent - self._get_previous_cpu()}%"
+            )
+            
+            st.metric(
+                "Memory Usage",
+                f"{memory.percent}%",
+                delta=f"{memory.percent - self._get_previous_memory()}%"
+            )
+        
+        # GPU resources
+        with col2:
+            if torch.cuda.is_available():
+                gpu_memory = torch.cuda.memory_allocated() / 1024**2
+                gpu_util = torch.cuda.utilization()
+                
+                st.metric("GPU Memory", f"{gpu_memory:.1f} MB")
+                st.metric("GPU Utilization", f"{gpu_util}%")
+            else:
+                st.info("No GPU available")
+        
+        # Disk resources
+        with col3:
+            disk = psutil.disk_usage('/')
+            st.metric("Disk Usage", f"{disk.percent}%")
+            st.metric("Free Space", f"{disk.free / 1024**3:.1f} GB")
+
+    def _render_model_insights(self):
+        """Render model training insights."""
+        st.subheader("🔍 Model Insights")
+        
+        # Feature importance
+        if self.metrics['feature_importance_history']:
+            st.subheader("Feature Importance")
+            
+            # Calculate average importance across folds
+            importance_df = pd.DataFrame(
+                self.metrics['feature_importance_history']
+            ).groupby('features')['importance'].mean()
+            
+            fig = px.bar(
+                importance_df,
+                title='Feature Importance',
+                labels={'value': 'Importance', 'index': 'Feature'}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Learning dynamics
+        st.subheader("Learning Dynamics")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Loss landscape
+            if st.session_state.metrics_history['training_loss']:
+                loss_data = pd.DataFrame({
+                    'Training': st.session_state.metrics_history['training_loss'],
+                    'Validation': st.session_state.metrics_history['validation_loss']
+                })
+                
+                fig = px.line(
+                    loss_data,
+                    title='Loss Landscape'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            # Learning rate dynamics
+            if st.session_state.metrics_history['learning_rate']:
+                fig = px.line(
+                    y=st.session_state.metrics_history['learning_rate'],
+                    title='Learning Rate Schedule'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    def _calculate_hurst_exponent(self, returns: pd.Series) -> float:
+        """Calculate Hurst exponent for market efficiency analysis."""
+        lags = range(2, 20)
+        tau = [np.sqrt(np.std(np.subtract(returns[lag:], returns[:-lag])))
+               for lag in lags]
+        
+        reg = np.polyfit(np.log(lags), np.log(tau), 1)
+        return reg[0]
+
+    def _get_previous_cpu(self) -> float:
+        """Get previous CPU usage for delta calculation."""
+        if 'cpu_usage' in st.session_state.metrics_history:
+            return st.session_state.metrics_history['cpu_usage'][-2] \
+                if len(st.session_state.metrics_history['cpu_usage']) > 1 else 0
+        return 0
+
+    def _get_previous_memory(self) -> float:
+        """Get previous memory usage for delta calculation."""
+        if 'memory_usage' in st.session_state.metrics_history:
+            return st.session_state.metrics_history['memory_usage'][-2] \
+                if len(st.session_state.metrics_history['memory_usage']) > 1 else 0
+        return 0
+
     def _get_colorway(self, scheme: str) -> List[str]:
         """Get color scheme for plots."""
         schemes = {
