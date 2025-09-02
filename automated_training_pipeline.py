@@ -223,6 +223,39 @@ class AutomatedTrainingPipeline:
         logger.info(f"Preprocessed data: {len(df)} rows, {len(df.columns)} columns")
         return df
 
+    def _calculate_rsi(self, close: np.ndarray, period: int = 14) -> np.ndarray:
+        """Calculate RSI using vectorized operations."""
+        # Calculate price changes
+        delta = np.diff(close, prepend=close[0])
+        
+        # Separate gains and losses
+        gains = np.where(delta > 0, delta, 0)
+        losses = np.where(delta < 0, -delta, 0)
+        
+        # Calculate average gains and losses
+        avg_gains = pd.Series(gains).rolling(window=period).mean().values
+        avg_losses = pd.Series(losses).rolling(window=period).mean().values
+        
+        # Calculate RS and RSI
+        rs = np.divide(avg_gains, avg_losses, out=np.zeros_like(avg_gains), where=avg_losses != 0)
+        rsi = 100 - (100 / (1 + rs))
+        
+        return rsi
+
+    def _calculate_macd(self, close: np.ndarray, fast: int = 12, slow: int = 26, signal: int = 9) -> Tuple[np.ndarray, np.ndarray]:
+        """Calculate MACD using vectorized operations."""
+        # Calculate EMAs
+        ema_fast = pd.Series(close).ewm(span=fast, adjust=False).mean().values
+        ema_slow = pd.Series(close).ewm(span=slow, adjust=False).mean().values
+        
+        # Calculate MACD line
+        macd_line = ema_fast - ema_slow
+        
+        # Calculate signal line
+        signal_line = pd.Series(macd_line).ewm(span=signal, adjust=False).mean().values
+        
+        return macd_line, signal_line
+
     def _calculate_indicators_batch(self, group_data: Tuple[str, pd.DataFrame]) -> pd.DataFrame:
         """Calculate technical indicators for a batch of data."""
         symbol, group = group_data
@@ -251,6 +284,12 @@ class AutomatedTrainingPipeline:
         df['rsi'] = self._calculate_rsi(close)
         df['macd'], df['macd_signal'] = self._calculate_macd(close)
         
+        # Additional indicators
+        df['bollinger_upper'] = df['sma_20'] + 2 * df['volatility']
+        df['bollinger_lower'] = df['sma_20'] - 2 * df['volatility']
+        df['momentum'] = close / np.roll(close, 10) - 1
+        df['rate_of_change'] = (close - np.roll(close, 10)) / np.roll(close, 10)
+        
         # Volume-based indicators (if volume data available)
         if 'volume' in df.columns:
             df['volume_sma'] = pd.Series(df['volume']).rolling(20).mean().values
@@ -275,6 +314,30 @@ class AutomatedTrainingPipeline:
 
         return df
 
+    def _select_features(self, df: pd.DataFrame) -> List[str]:
+        """Select features based on importance and correlation analysis."""
+        logger.info("Performing feature selection")
+        
+        # Remove non-feature columns
+        exclude_cols = ['timestamp', 'symbol', 'target', 'close']
+        feature_cols = [col for col in df.columns if col not in exclude_cols]
+        
+        # Calculate correlation with target
+        df['target'] = df['close'].shift(-1)
+        correlations = df[feature_cols + ['target']].corr()['target'].abs()
+        
+        # Select features with significant correlation
+        significant_features = correlations[correlations > 0.1].index.tolist()
+        
+        # Remove highly correlated features
+        correlation_matrix = df[significant_features].corr().abs()
+        upper = correlation_matrix.where(np.triu(np.ones(correlation_matrix.shape), k=1).astype(bool))
+        to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
+        final_features = [f for f in significant_features if f not in to_drop]
+        
+        logger.info(f"Selected {len(final_features)} features from {len(feature_cols)} total")
+        return final_features
+
     def train_models(self, df: pd.DataFrame) -> Dict[str, Dict]:
         """Train multiple models with GPU acceleration and parallel processing."""
         logger.info("Starting model training with GPU support")
@@ -290,6 +353,11 @@ class AutomatedTrainingPipeline:
         feature_cols = self._select_features(df)
         df['target'] = df['close'].shift(-1)
         df = df.dropna()
+
+        # Scale features
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        scaled_features = scaler.fit_transform(df[feature_cols])
 
         # Convert to GPU tensors if available
         X = torch.tensor(df[feature_cols].values, dtype=torch.float32, device=self.device)
