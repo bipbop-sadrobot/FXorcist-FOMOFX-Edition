@@ -19,6 +19,33 @@ class IntegratedMemorySystem:
         self.records.append(record)
         self.event_bus.publish("memory_updated", record)
 
+    def recall(self, query: str = None, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Recall records from memory, optionally filtered by query."""
+        if not self.records:
+            return []
+
+        # Convert deque to list for easier handling
+        records_list = list(self.records)
+
+        if query is None:
+            # Return most recent records
+            return records_list[-top_k:] if len(records_list) > top_k else records_list
+
+        # Simple text-based filtering
+        filtered = []
+        for record in records_list:
+            # Search in various text fields
+            searchable_text = ""
+            if "model" in record:
+                searchable_text += str(record["model"]) + " "
+            if "features" in record and isinstance(record["features"], dict):
+                searchable_text += " ".join(str(v) for v in record["features"].values())
+
+            if query.lower() in searchable_text.lower():
+                filtered.append(record)
+
+        return filtered[-top_k:] if len(filtered) > top_k else filtered
+
     # ------------- Analysis -------------
     def analyze_memory_trends(self, window: int = 100) -> Dict[str, Any]:
         if not self.records:
@@ -88,4 +115,4 @@ class IntegratedMemorySystem:
     # ------------- Federated trigger heuristic -------------
     def should_trigger_federated_round(self, period: int = 10) -> bool:
         self._federated_tick += 1
-        return self._federated_tick % period == 0\n
+        return self._federated_tick % period == 0

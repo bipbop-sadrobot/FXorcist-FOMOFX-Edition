@@ -87,8 +87,7 @@ def train_and_evaluate_model(X_train, X_test, y_train, y_test, model_params: dic
         'l2_leaf_reg': 3.0,
         'loss_function': 'RMSE',
         'random_seed': 42,
-        'early_stopping_rounds': 50,
-        'verbose': False
+        'early_stopping_rounds': 50
     }
 
     # Update with custom parameters if provided

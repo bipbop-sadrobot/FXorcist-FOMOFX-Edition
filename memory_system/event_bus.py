@@ -20,4 +20,4 @@ class EventBus:
 
     # Hooks for persistence/backlog if desired
     def enable_persistence(self):
-        pass\n
+        pass

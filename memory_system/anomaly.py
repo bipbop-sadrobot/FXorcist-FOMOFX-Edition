@@ -6,14 +6,24 @@ from datetime import datetime, timezone
 import pandas as pd
 from scipy import stats
 from sklearn.preprocessing import StandardScaler
-from ruptures import Binseg  # For regime change detection
+
+# Optional import for regime change detection
+try:
+    from ruptures import Binseg
+    RUPTURES_AVAILABLE = True
+except ImportError:
+    RUPTURES_AVAILABLE = False
+    print("Warning: ruptures package not available. Regime change detection will be disabled.")
 
 class AnomalyDetector:
     def __init__(self, memory, n_estimators: int = 100, contamination: float = 0.05):
         self.memory = memory
         self.model = IsolationForest(n_estimators=n_estimators, contamination=contamination, random_state=42)
         self.scaler = StandardScaler()
-        self.regime_detector = Binseg(model="l2").fit  # L2 cost function for financial data
+        if RUPTURES_AVAILABLE:
+            self.regime_detector = Binseg(model="l2")  # L2 cost function for financial data
+        else:
+            self.regime_detector = None
         self.flash_crash_threshold = -4.0  # Standard deviations
         self.regime_change_threshold = 0.05  # p-value threshold
         
@@ -53,11 +63,11 @@ class AnomalyDetector:
 
     def detect_regime_change(self, data: np.ndarray, min_size: int = 20) -> List[Dict[str, Any]]:
         """Detect regime changes in the time series."""
-        if len(data) < min_size * 2:
+        if len(data) < min_size * 2 or self.regime_detector is None:
             return []
-            
+
         # Detect change points
-        change_points = self.regime_detector(data).predict(n_bkps=3)
+        change_points = self.regime_detector.fit(data).predict(n_bkps=3)
         
         regimes = []
         for cp in change_points:
@@ -88,8 +98,14 @@ class AnomalyDetector:
         memory_entries = self.memory.recall()
         
         for r in memory_entries:
-            feats = r.metadata.get("features") or {}
-            ts = r.metadata.get("timestamp")
+            # Handle both dict format and object format
+            if hasattr(r, 'metadata'):
+                feats = r.metadata.get("features") or {}
+                ts = r.metadata.get("timestamp")
+            else:
+                # Handle dict format from IntegratedMemorySystem
+                feats = r.get("features") or {}
+                ts = r.get("ts") or r.get("timestamp")
             
             if ts:
                 ts = self.normalize_timezone(float(ts))

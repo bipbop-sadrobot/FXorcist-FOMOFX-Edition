@@ -242,7 +242,7 @@ class TrainingMonitor(PerformanceComponent):
                         ['Interactive', 'Area', 'Candlestick'],
                         index=['Interactive', 'Area', 'Candlestick'].index(
                             st.session_state.viz_preferences.get('chart_type', 'Interactive')
-                        )
+                        ) if st.session_state.viz_preferences.get('chart_type', 'Interactive') in ['Interactive', 'Area', 'Candlestick'] else 0
                     )
         
             # Display metrics in columns

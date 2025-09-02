@@ -69,3 +69,17 @@ class FederatedMemory:
             self.accountant.add_round(eps, delta)
         self.global_model = aggregated
         return {"model": self.global_model, "accounting": self.accountant.summary()}
+
+    def train_round(self):
+        """Simple training round simulation for demo purposes."""
+        # Simulate a federated training round with dummy data
+        dummy_updates = [
+            {
+                "params": {"weight1": random.random(), "weight2": random.random()},
+                "weight": 1.0,
+                "signature": hmac.new(self.secret_key, str({"weight1": 0.5, "weight2": 0.5}).encode(), hashlib.sha256).hexdigest()
+            }
+        ]
+        result = self.aggregate(dummy_updates)
+        self.event_bus.publish("federated_round_completed", result)
+        return result
