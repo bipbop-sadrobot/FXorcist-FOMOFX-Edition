@@ -185,24 +185,65 @@ class TrainingMonitor(PerformanceComponent):
         st.header("📊 Real-time Metrics")
         
         # Add tabs for different metric views
-        metric_tabs = st.tabs(["Training Metrics", "Data Synthesis", "Algorithmic Efficiency"])
+        metric_tabs = st.tabs([
+            "Training Progress",
+            "Data Synthesis",
+            "Algorithmic Efficiency",
+            "Resource Usage",
+            "Model Insights"
+        ])
         
-        with metric_tabs[0]:
-            # Original metrics display settings
-            with st.expander("📈 Metrics Settings"):
-                col1, col2 = st.columns(2)
+        with metric_tabs[0]:  # Training Progress
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                # Interactive training progress chart
+                progress_chart = self._create_progress_chart(
+                    st.session_state.metrics_history['training_loss'],
+                    st.session_state.metrics_history['validation_loss']
+                )
+                st.plotly_chart(progress_chart, use_container_width=True)
+            
+            with col2:
+                # Key metrics and status
+                if st.session_state.metrics_history['training_loss']:
+                    current_loss = st.session_state.metrics_history['training_loss'][-1]
+                    best_loss = min(st.session_state.metrics_history['training_loss'])
+                    improvement = ((current_loss - best_loss) / best_loss) * 100
+                    
+                    st.metric("Current Loss", f"{current_loss:.6f}")
+                    st.metric("Best Loss", f"{best_loss:.6f}")
+                    st.metric("Improvement", f"{improvement:.2f}%")
+                
+                # Training controls
+                if st.button("Pause Training", disabled=not st.session_state.training_state['active']):
+                    st.session_state.training_state['active'] = False
+                if st.button("Resume Training", disabled=st.session_state.training_state['active']):
+                    st.session_state.training_state['active'] = True
+            
+            # Settings and customization
+            with st.expander("📈 Display Settings"):
+                col1, col2, col3 = st.columns(3)
                 with col1:
-                    update_interval = st.slider("Update Interval (s)", 1, 30, 
-                                             st.session_state.viz_preferences['update_interval'])
-                    show_history = st.checkbox("Show History", 
-                                            st.session_state.viz_preferences['show_history'])
+                    update_interval = st.slider(
+                        "Update Interval (s)",
+                        1, 30,
+                        st.session_state.viz_preferences['update_interval']
+                    )
                 with col2:
-                    if show_history:
-                        history_window = st.slider("History Window (min)", 5, 60, 
-                                                st.session_state.viz_preferences['history_window'])
-                    chart_type = st.selectbox("Chart Type", ['Line', 'Area', 'Bar'],
-                                           index=['Line', 'Area', 'Bar'].index(
-                                               st.session_state.viz_preferences['chart_type']))
+                    smoothing = st.slider(
+                        "Smoothing Factor",
+                        0.0, 1.0, 0.6,
+                        help="Apply exponential smoothing to metrics"
+                    )
+                with col3:
+                    chart_type = st.selectbox(
+                        "Chart Type",
+                        ['Interactive', 'Area', 'Candlestick'],
+                        index=['Interactive', 'Area', 'Candlestick'].index(
+                            st.session_state.viz_preferences.get('chart_type', 'Interactive')
+                        )
+                    )
         
             # Display metrics in columns
             col1, col2, col3 = st.columns(3)
@@ -241,38 +282,98 @@ class TrainingMonitor(PerformanceComponent):
             if show_history:
                 self._render_metrics_history(chart_type)
         
-        with metric_tabs[1]:
-            self._render_data_synthesis_controls()
+        with metric_tabs[1]:  # Data Synthesis
+            col1, col2 = st.columns([2, 1])
             
-            # Show synthetic data preview if available
-            if hasattr(self, 'data_loader') and hasattr(self.data_loader, 'generate_synthetic_data'):
-                st.subheader("Synthetic Data Preview")
-                try:
-                    # Generate a small sample of synthetic data
-                    sample_data = self.data_loader.load_forex_data(timeframe="1H", augment_data=True)[0].tail(100)
-                    
-                    # Plot the synthetic data
-                    fig = go.Figure(data=[
-                        go.Candlestick(
-                            x=sample_data.index,
-                            open=sample_data['open'],
-                            high=sample_data['high'],
-                            low=sample_data['low'],
-                            close=sample_data['close']
+            with col1:
+                # Interactive synthetic data controls
+                st.subheader("Synthetic Data Generation")
+                
+                synthesis_params = {
+                    'num_samples': st.slider("Number of Samples", 100, 5000, 1000),
+                    'edge_case_ratio': st.slider("Edge Case Ratio", 0.0, 1.0, 0.2),
+                    'market_regimes': st.multiselect(
+                        "Market Regimes",
+                        ['trending', 'ranging', 'volatile'],
+                        ['trending', 'ranging']
+                    )
+                }
+                
+                if st.button("Generate Preview"):
+                    with st.spinner("Generating synthetic data..."):
+                        synthetic_data = self.data_loader.generate_synthetic_data(
+                            self.latest_data,
+                            **synthesis_params
                         )
-                    ])
-                    fig.update_layout(title='Synthetic Data Sample')
-                    st.plotly_chart(fig, use_container_width=True)
+                        st.session_state.synthetic_preview = synthetic_data
+            
+            with col2:
+                # Synthesis statistics
+                if hasattr(st.session_state, 'synthetic_preview'):
+                    data = st.session_state.synthetic_preview
+                    stats = self._calculate_synthesis_stats(data)
                     
-                    # Show statistics
-                    st.subheader("Synthetic Data Statistics")
-                    stats = sample_data['close'].describe()
-                    st.dataframe(stats)
-                except Exception as e:
-                    st.warning(f"Could not generate synthetic data preview: {str(e)}")
+                    st.metric("Total Samples", len(data))
+                    st.metric("Edge Cases", stats['edge_cases'])
+                    st.metric("Pattern Quality", f"{stats['quality_score']:.2f}")
+            
+            # Pattern visualization
+            if hasattr(st.session_state, 'synthetic_preview'):
+                pattern_tabs = st.tabs(["Price Patterns", "Distributions", "Quality Metrics"])
+                
+                with pattern_tabs[0]:
+                    fig = self._create_pattern_visualization(st.session_state.synthetic_preview)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with pattern_tabs[1]:
+                    fig = self._create_distribution_plots(st.session_state.synthetic_preview)
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with pattern_tabs[2]:
+                    self._render_quality_metrics(st.session_state.synthetic_preview)
         
-        with metric_tabs[2]:
-            self._render_algorithmic_efficiency()
+        with metric_tabs[2]:  # Algorithmic Efficiency
+            # Enhanced efficiency metrics
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Training efficiency metrics
+                efficiency_metrics = self._calculate_efficiency_metrics()
+                
+                st.metric(
+                    "Training Speed",
+                    f"{efficiency_metrics['samples_per_second']:.1f} samples/s",
+                    delta=f"{efficiency_metrics['speed_improvement']:.1f}%"
+                )
+                
+                st.metric(
+                    "Memory Efficiency",
+                    f"{efficiency_metrics['memory_per_sample']:.2f} KB/sample",
+                    delta=f"{efficiency_metrics['memory_improvement']:.1f}%"
+                )
+                
+                st.metric(
+                    "GPU Utilization",
+                    f"{efficiency_metrics['gpu_utilization']:.1f}%",
+                    delta=f"{efficiency_metrics['gpu_improvement']:.1f}%"
+                )
+            
+            with col2:
+                # Interactive efficiency analysis
+                st.subheader("Performance Analysis")
+                metric_type = st.selectbox(
+                    "Analyze",
+                    ['Training Speed', 'Memory Usage', 'GPU Utilization']
+                )
+                
+                fig = self._create_efficiency_chart(metric_type)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with metric_tabs[3]:  # Resource Usage
+            self._render_resource_monitor()
+        
+        with metric_tabs[4]:  # Model Insights
+            self._render_model_insights()
 
     def _render_training_controls(self):
         """Render enhanced training controls with real-time parameter adjustment."""
