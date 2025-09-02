@@ -53,18 +53,54 @@ class AutomatedTrainingPipeline:
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.num_workers = os.cpu_count()
         
-        # Enhanced performance monitoring
+        # Comprehensive performance metrics
         self.metrics = {
+            # Time metrics
             'data_processing_time': 0,
             'training_time': 0,
+            'data_synthesis_time': 0,
+            'validation_time': 0,
+            
+            # Resource metrics
             'peak_memory_usage': 0,
             'gpu_memory_usage': 0 if torch.cuda.is_available() else None,
+            'cpu_utilization': [],
+            'io_operations': 0,
+            
+            # Data quality metrics
             'synthetic_data_ratio': 0,
             'edge_cases_generated': 0,
+            'data_quality_score': 0,
+            'pattern_diversity': 0,
+            
+            # Cache efficiency
             'cache_hit_rate': 0,
+            'cache_memory_usage': 0,
+            'cache_eviction_rate': 0,
+            
+            # Training efficiency
             'training_throughput': 0,
+            'samples_per_second': 0,
+            'convergence_speed': 0,
             'model_convergence_rate': {},
-            'feature_importance_history': []
+            
+            # Feature metrics
+            'feature_importance_history': [],
+            'feature_stability_score': 0,
+            'feature_correlation_matrix': None,
+            
+            # Validation metrics
+            'cross_validation_scores': [],
+            'out_of_sample_performance': {},
+            'model_robustness_score': 0
+        }
+        
+        # Initialize validation framework
+        self.validation_framework = {
+            'data_quality': self._validate_data_quality,
+            'training_efficiency': self._validate_training_efficiency,
+            'model_performance': self._validate_model_performance,
+            'resource_utilization': self._validate_resource_utilization
         }
 
         # Create directories
@@ -175,22 +211,37 @@ class AutomatedTrainingPipeline:
     def process_data(self, augment_data: bool = True) -> Optional[pd.DataFrame]:
         """Process and combine all downloaded forex data with synthetic data generation."""
         logger.info("Starting enhanced data processing with synthesis")
-        start_time = datetime.now()
+        process_start_time = datetime.now()
+        
+        # Initialize metrics
+        metrics = {
+            'start_memory': psutil.Process().memory_info().rss,
+            'io_start': psutil.disk_io_counters(),
+            'cpu_start': psutil.cpu_percent()
+        }
         
         try:
-            # Load and process data using enhanced data loader
+            # Load and process data with detailed metrics
+            data_load_start = datetime.now()
             base_data = self.data_loader.load_forex_data(
                 timeframe="1H",
                 augment_data=augment_data
             )[0]
+            self.metrics['data_load_time'] = (datetime.now() - data_load_start).total_seconds()
             
             if augment_data:
-                # Generate synthetic data including edge cases
+                # Generate synthetic data with quality metrics
+                synthesis_start = datetime.now()
                 synthetic_data = self.data_loader.generate_synthetic_data(
                     base_data,
-                    num_samples=int(len(base_data) * 0.3),  # 30% additional synthetic data
+                    num_samples=int(len(base_data) * 0.3),
                     include_edge_cases=True
                 )
+                self.metrics['data_synthesis_time'] = (datetime.now() - synthesis_start).total_seconds()
+                
+                # Calculate synthesis quality metrics
+                quality_metrics = self._calculate_synthesis_quality(synthetic_data, base_data)
+                self.metrics.update(quality_metrics)
                 
                 # Combine real and synthetic data
                 combined_data = pd.concat([base_data, synthetic_data])
