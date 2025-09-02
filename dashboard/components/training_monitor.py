@@ -85,62 +85,194 @@ class TrainingMonitor(PerformanceComponent):
         for improvement in improvements:
             st.success(improvement)
 
+    def _render_data_synthesis_controls(self):
+        """Render controls for data synthesis and augmentation."""
+        st.header("🔄 Data Synthesis Controls")
+        
+        with st.expander("Data Synthesis Settings", expanded=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                edge_case_ratio = st.slider(
+                    "Edge Case Ratio",
+                    0.0, 1.0, 
+                    self.data_loader.synthesis_config['edge_case_ratio'],
+                    help="Proportion of synthetic data that should be edge cases"
+                )
+                
+                noise_level = st.slider(
+                    "Noise Level",
+                    0.0, 0.2, 
+                    self.data_loader.synthesis_config['noise_level'],
+                    help="Amount of random noise to add to synthetic data"
+                )
+            
+            with col2:
+                augmentation_ratio = st.slider(
+                    "Augmentation Ratio",
+                    0.0, 1.0, 
+                    self.data_loader.synthesis_config['augmentation_ratio'],
+                    help="Proportion of augmented data to add to training set"
+                )
+                
+                trend_strength = st.slider(
+                    "Trend Strength",
+                    0.1, 2.0, 
+                    self.data_loader.synthesis_config['trend_strength'],
+                    help="Strength of synthetic trends"
+                )
+            
+            # Update synthesis config if changed
+            if (edge_case_ratio != self.data_loader.synthesis_config['edge_case_ratio'] or
+                noise_level != self.data_loader.synthesis_config['noise_level'] or
+                augmentation_ratio != self.data_loader.synthesis_config['augmentation_ratio'] or
+                trend_strength != self.data_loader.synthesis_config['trend_strength']):
+                
+                self.data_loader.synthesis_config.update({
+                    'edge_case_ratio': edge_case_ratio,
+                    'noise_level': noise_level,
+                    'augmentation_ratio': augmentation_ratio,
+                    'trend_strength': trend_strength
+                })
+                st.success("Synthesis settings updated!")
+
+    def _render_algorithmic_efficiency(self):
+        """Render algorithmic efficiency metrics and visualizations."""
+        st.header("⚡ Algorithmic Efficiency")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        # Training speed metrics
+        with col1:
+            if st.session_state.metrics_history['batch_time']:
+                avg_batch_time = np.mean(st.session_state.metrics_history['batch_time'][-50:])
+                st.metric(
+                    "Avg Batch Time",
+                    f"{avg_batch_time:.3f}s",
+                    delta=f"{avg_batch_time - np.mean(st.session_state.metrics_history['batch_time'][-100:-50]):.3f}s"
+                )
+            
+            throughput = len(st.session_state.metrics_history['batch_time']) / sum(st.session_state.metrics_history['batch_time'])
+            st.metric("Training Throughput", f"{throughput:.1f} batches/s")
+        
+        # Memory efficiency
+        with col2:
+            if 'memory_usage' in st.session_state.metrics_history:
+                current_memory = st.session_state.metrics_history['memory_usage'][-1]
+                peak_memory = max(st.session_state.metrics_history['memory_usage'])
+                st.metric("Current Memory", f"{current_memory:.1f} MB")
+                st.metric("Peak Memory", f"{peak_memory:.1f} MB")
+        
+        # Cache efficiency
+        with col3:
+            cache_stats = self.data_loader.get_performance_stats()
+            hit_rate = cache_stats['cache_hit_rate'] * 100
+            st.metric("Cache Hit Rate", f"{hit_rate:.1f}%")
+            st.metric("Cache Size", f"{len(cache_stats['cache_stats'])} items")
+        
+        # Efficiency timeline
+        efficiency_data = pd.DataFrame({
+            'Batch Time': st.session_state.metrics_history['batch_time'],
+            'Memory Usage': st.session_state.metrics_history['memory_usage'],
+            'GPU Memory': st.session_state.metrics_history['gpu_memory']
+        })
+        
+        fig = px.line(efficiency_data, title='Resource Usage Over Time')
+        st.plotly_chart(fig, use_container_width=True)
+
     def _render_real_time_metrics(self):
         """Render real-time performance metrics with customizable display."""
         st.header("📊 Real-time Metrics")
         
-        # Metrics display settings
-        with st.expander("📈 Metrics Settings"):
-            col1, col2 = st.columns(2)
+        # Add tabs for different metric views
+        metric_tabs = st.tabs(["Training Metrics", "Data Synthesis", "Algorithmic Efficiency"])
+        
+        with metric_tabs[0]:
+            # Original metrics display settings
+            with st.expander("📈 Metrics Settings"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    update_interval = st.slider("Update Interval (s)", 1, 30, 
+                                             st.session_state.viz_preferences['update_interval'])
+                    show_history = st.checkbox("Show History", 
+                                            st.session_state.viz_preferences['show_history'])
+                with col2:
+                    if show_history:
+                        history_window = st.slider("History Window (min)", 5, 60, 
+                                                st.session_state.viz_preferences['history_window'])
+                    chart_type = st.selectbox("Chart Type", ['Line', 'Area', 'Bar'],
+                                           index=['Line', 'Area', 'Bar'].index(
+                                               st.session_state.viz_preferences['chart_type']))
+        
+            # Display metrics in columns
+            col1, col2, col3 = st.columns(3)
+        
+            # Training metrics
             with col1:
-                update_interval = st.slider("Update Interval (s)", 1, 30, 
-                                         st.session_state.viz_preferences['update_interval'])
-                show_history = st.checkbox("Show History", 
-                                        st.session_state.viz_preferences['show_history'])
-            with col2:
-                if show_history:
-                    history_window = st.slider("History Window (min)", 5, 60, 
-                                            st.session_state.viz_preferences['history_window'])
-                chart_type = st.selectbox("Chart Type", ['Line', 'Area', 'Bar'],
-                                       index=['Line', 'Area', 'Bar'].index(
-                                           st.session_state.viz_preferences['chart_type']))
-        
-        # Display metrics in columns
-        col1, col2, col3 = st.columns(3)
-        
-        # Training metrics
-        with col1:
-            if st.session_state.metrics_history['training_loss']:
-                current_loss = st.session_state.metrics_history['training_loss'][-1]
-                st.metric("Current Loss", f"{current_loss:.6f}")
-            
-            if st.session_state.metrics_history['batch_time']:
-                avg_time = sum(st.session_state.metrics_history['batch_time'][-10:]) / 10
-                st.metric("Avg Batch Time", f"{avg_time:.3f}s")
-        
-        # Resource metrics
-        with col2:
-            import psutil
-            cpu_usage = psutil.cpu_percent()
-            memory = psutil.Process().memory_info()
-            memory_usage = memory.rss / (1024 * 1024)  # MB
-            
-            st.metric("CPU Usage", f"{cpu_usage}%")
-            st.metric("Memory Usage", f"{memory_usage:.1f} MB")
-        
-        # GPU metrics if available
-        with col3:
-            import torch
-            if torch.cuda.is_available():
-                gpu_memory = torch.cuda.memory_allocated() / (1024 * 1024)  # MB
-                gpu_utilization = torch.cuda.utilization()
+                if st.session_state.metrics_history['training_loss']:
+                    current_loss = st.session_state.metrics_history['training_loss'][-1]
+                    st.metric("Current Loss", f"{current_loss:.6f}")
                 
-                st.metric("GPU Memory", f"{gpu_memory:.1f} MB")
-                st.metric("GPU Utilization", f"{gpu_utilization}%")
+                if st.session_state.metrics_history['batch_time']:
+                    avg_time = sum(st.session_state.metrics_history['batch_time'][-10:]) / 10
+                    st.metric("Avg Batch Time", f"{avg_time:.3f}s")
         
-        # Historical metrics visualization
-        if show_history:
-            self._render_metrics_history(chart_type)
+            # Resource metrics
+            with col2:
+                import psutil
+                cpu_usage = psutil.cpu_percent()
+                memory = psutil.Process().memory_info()
+                memory_usage = memory.rss / (1024 * 1024)  # MB
+                
+                st.metric("CPU Usage", f"{cpu_usage}%")
+                st.metric("Memory Usage", f"{memory_usage:.1f} MB")
+        
+            # GPU metrics if available
+            with col3:
+                import torch
+                if torch.cuda.is_available():
+                    gpu_memory = torch.cuda.memory_allocated() / (1024 * 1024)  # MB
+                    gpu_utilization = torch.cuda.utilization()
+                    
+                    st.metric("GPU Memory", f"{gpu_memory:.1f} MB")
+                    st.metric("GPU Utilization", f"{gpu_utilization}%")
+            
+            # Historical metrics visualization
+            if show_history:
+                self._render_metrics_history(chart_type)
+        
+        with metric_tabs[1]:
+            self._render_data_synthesis_controls()
+            
+            # Show synthetic data preview if available
+            if hasattr(self, 'data_loader') and hasattr(self.data_loader, 'generate_synthetic_data'):
+                st.subheader("Synthetic Data Preview")
+                try:
+                    # Generate a small sample of synthetic data
+                    sample_data = self.data_loader.load_forex_data(timeframe="1H", augment_data=True)[0].tail(100)
+                    
+                    # Plot the synthetic data
+                    fig = go.Figure(data=[
+                        go.Candlestick(
+                            x=sample_data.index,
+                            open=sample_data['open'],
+                            high=sample_data['high'],
+                            low=sample_data['low'],
+                            close=sample_data['close']
+                        )
+                    ])
+                    fig.update_layout(title='Synthetic Data Sample')
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Show statistics
+                    st.subheader("Synthetic Data Statistics")
+                    stats = sample_data['close'].describe()
+                    st.dataframe(stats)
+                except Exception as e:
+                    st.warning(f"Could not generate synthetic data preview: {str(e)}")
+        
+        with metric_tabs[2]:
+            self._render_algorithmic_efficiency()
 
     def _render_training_controls(self):
         """Render enhanced training controls with real-time parameter adjustment."""
