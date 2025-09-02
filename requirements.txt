@@ -7,6 +7,7 @@ loguru==0.7.2
 numpy==1.26.4
 pandas==2.2.1
 plotly==5.24.1  # Verified compatible version
+quantstats>=0.0.59  # For portfolio analysis and reporting
 quantstats>=0.0.59  # Core quantstats functionality
 econml>=0.14.1  # For causal analysis
 statsmodels>=0.14.1  # For advanced statistical analysis
