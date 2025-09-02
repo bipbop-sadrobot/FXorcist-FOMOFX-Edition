@@ -15,11 +15,14 @@ import concurrent.futures
 import torch
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import asyncio
 import json
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from memory_profiler import profile
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from dashboard.utils.enhanced_data_loader import EnhancedDataLoader
 
 # Configure logging
 logging.basicConfig(
@@ -33,24 +36,35 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class AutomatedTrainingPipeline:
-    """Automated pipeline for forex data download, processing, and model training."""
+    """Automated pipeline for forex data download, processing, and model training with advanced synthesis."""
 
-    def __init__(self):
+    def __init__(self, synthesis_config: Optional[Dict[str, float]] = None):
         self.project_root = Path(__file__).parent
         self.data_dir = self.project_root / "data"
         self.models_dir = self.project_root / "models" / "trained"
         self.logs_dir = self.project_root / "logs"
         
+        # Initialize enhanced data loader
+        self.data_loader = EnhancedDataLoader(num_workers=os.cpu_count())
+        if synthesis_config:
+            self.data_loader.synthesis_config.update(synthesis_config)
+        
         # Initialize GPU if available
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.num_workers = os.cpu_count()
         
-        # Performance monitoring
+        # Enhanced performance monitoring
         self.metrics = {
             'data_processing_time': 0,
             'training_time': 0,
             'peak_memory_usage': 0,
-            'gpu_memory_usage': 0 if torch.cuda.is_available() else None
+            'gpu_memory_usage': 0 if torch.cuda.is_available() else None,
+            'synthetic_data_ratio': 0,
+            'edge_cases_generated': 0,
+            'cache_hit_rate': 0,
+            'training_throughput': 0,
+            'model_convergence_rate': {},
+            'feature_importance_history': []
         }
 
         # Create directories
@@ -158,44 +172,57 @@ class AutomatedTrainingPipeline:
             return pd.concat(symbol_data, ignore_index=True)
         return None
 
-    def process_data(self) -> Optional[pd.DataFrame]:
-        """Process and combine all downloaded forex data using parallel processing."""
-        logger.info("Starting parallel data processing")
+    def process_data(self, augment_data: bool = True) -> Optional[pd.DataFrame]:
+        """Process and combine all downloaded forex data with synthetic data generation."""
+        logger.info("Starting enhanced data processing with synthesis")
         start_time = datetime.now()
         
-        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-            symbol_futures = {executor.submit(self._process_symbol_data, symbol): symbol 
-                            for symbol in self.symbols}
+        try:
+            # Load and process data using enhanced data loader
+            base_data = self.data_loader.load_forex_data(
+                timeframe="1H",
+                augment_data=augment_data
+            )[0]
             
-            all_data = []
-            for future in concurrent.futures.as_completed(symbol_futures):
-                symbol = symbol_futures[future]
-                try:
-                    symbol_df = future.result()
-                    if symbol_df is not None:
-                        all_data.append(symbol_df)
-                        logger.info(f"Processed {symbol}: {len(symbol_df)} rows")
-                except Exception as e:
-                    logger.error(f"Error processing {symbol}: {str(e)}")
+            if augment_data:
+                # Generate synthetic data including edge cases
+                synthetic_data = self.data_loader.generate_synthetic_data(
+                    base_data,
+                    num_samples=int(len(base_data) * 0.3),  # 30% additional synthetic data
+                    include_edge_cases=True
+                )
+                
+                # Combine real and synthetic data
+                combined_data = pd.concat([base_data, synthetic_data])
+                combined_data = combined_data.sort_index()
+                
+                # Update metrics
+                self.metrics['synthetic_data_ratio'] = len(synthetic_data) / len(base_data)
+                self.metrics['edge_cases_generated'] = int(len(synthetic_data) * 
+                                                         self.data_loader.synthesis_config['edge_case_ratio'])
+                
+                logger.info(f"Generated {len(synthetic_data)} synthetic samples "
+                          f"({self.metrics['edge_cases_generated']} edge cases)")
+            else:
+                combined_data = base_data
 
-        if not all_data:
-            logger.error("No data found to process")
+            # Enhanced preprocessing with parallel processing
+            processed_data = self.preprocess_data(combined_data)
+
+            # Save processed data
+            output_path = self.data_dir / "processed" / "comprehensive_forex_data.parquet"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            processed_data.to_parquet(output_path)
+            
+            # Update processing time metric
+            self.metrics['data_processing_time'] = (datetime.now() - start_time).total_seconds()
+            
+            logger.info(f"Saved processed data to {output_path}")
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Error in data processing: {str(e)}")
             return None
-
-        # Combine all symbols
-        combined_df = pd.concat(all_data, ignore_index=True)
-        logger.info(f"Total combined data: {len(combined_df)} rows")
-
-        # Basic preprocessing
-        combined_df = self.preprocess_data(combined_df)
-
-        # Save processed data
-        output_path = self.data_dir / "processed" / "comprehensive_forex_data.parquet"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        combined_df.to_parquet(output_path)
-
-        logger.info(f"Saved processed data to {output_path}")
-        return combined_df
 
     def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Preprocess the combined forex data."""
@@ -338,60 +365,94 @@ class AutomatedTrainingPipeline:
         logger.info(f"Selected {len(final_features)} features from {len(feature_cols)} total")
         return final_features
 
-    def train_models(self, df: pd.DataFrame) -> Dict[str, Dict]:
-        """Train multiple models with GPU acceleration and parallel processing."""
-        logger.info("Starting model training with GPU support")
+    def train_models(self, df: pd.DataFrame, use_gpu: bool = True) -> Dict[str, Dict]:
+        """Train multiple models with advanced optimization and monitoring."""
+        logger.info("Starting enhanced model training pipeline")
         start_time = datetime.now()
-
-        # Monitor memory usage
-        process = psutil.Process(os.getpid())
-        initial_memory = process.memory_info().rss / 1024 / 1024  # MB
-
-        results = {}
-
-        # Enhanced feature selection
-        feature_cols = self._select_features(df)
-        df['target'] = df['close'].shift(-1)
-        df = df.dropna()
-
-        # Scale features
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler()
-        scaled_features = scaler.fit_transform(df[feature_cols])
-
-        # Convert to GPU tensors if available
-        X = torch.tensor(df[feature_cols].values, dtype=torch.float32, device=self.device)
-        y = torch.tensor(df['target'].values, dtype=torch.float32, device=self.device)
-
-        # Time series split for more robust evaluation
-        split_idx = int(len(X) * 0.8)
-        X_train, X_test = X[:split_idx], X[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
-
-        # Track memory usage
-        current_memory = process.memory_info().rss / 1024 / 1024
-        self.metrics['peak_memory_usage'] = max(current_memory - initial_memory, 0)
         
-        if torch.cuda.is_available():
-            self.metrics['gpu_memory_usage'] = torch.cuda.max_memory_allocated() / 1024 / 1024  # MB
+        # Initialize monitoring
+        process = psutil.Process(os.getpid())
+        initial_memory = process.memory_info().rss / 1024 / 1024
+        
+        results = {}
+        convergence_history = {}
 
-        logger.info(f"Train set: {len(X_train)} samples")
-        logger.info(f"Test set: {len(X_test)} samples")
-
-        # Train CatBoost model
-        results['catboost'] = self.train_catboost_model(X_train, X_test, y_train, y_test)
-
-        # Train additional models if available
         try:
-            from xgboost import XGBRegressor
-            results['xgboost'] = self.train_xgboost_model(X_train, X_test, y_train, y_test)
-        except ImportError:
-            logger.warning("XGBoost not available, skipping")
+            # Enhanced feature selection with importance tracking
+            feature_cols = self._select_features(df)
+            df['target'] = df['close'].shift(-1)
+            df = df.dropna()
+            
+            # Advanced scaling with robustness to outliers
+            scaler = RobustScaler()
+            scaled_features = scaler.fit_transform(df[feature_cols])
+            
+            # Time series cross-validation
+            tscv = TimeSeriesSplit(n_splits=5)
+            
+            # Convert to tensors if using GPU
+            if use_gpu and torch.cuda.is_available():
+                X = torch.tensor(scaled_features, dtype=torch.float32, device=self.device)
+                y = torch.tensor(df['target'].values, dtype=torch.float32, device=self.device)
+            else:
+                X = scaled_features
+                y = df['target'].values
 
-        # Save training summary
-        self.save_training_summary(results)
+            # Train models with cross-validation
+            for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+                X_train = X[train_idx]
+                X_test = X[test_idx]
+                y_train = y[train_idx]
+                y_test = y[test_idx]
+                
+                # Train CatBoost with advanced monitoring
+                fold_results = self.train_catboost_model(
+                    X_train, X_test, y_train, y_test,
+                    feature_names=feature_cols,
+                    fold=fold
+                )
+                
+                # Update convergence history
+                if 'catboost' not in convergence_history:
+                    convergence_history['catboost'] = []
+                convergence_history['catboost'].append(fold_results['metrics'])
+                
+                # Track feature importance
+                self.metrics['feature_importance_history'].append({
+                    'fold': fold,
+                    'importance': fold_results['feature_importance'],
+                    'features': feature_cols
+                })
+                
+                results[f'catboost_fold_{fold}'] = fold_results
 
-        return results
+            # Update metrics
+            self.metrics['training_time'] = (datetime.now() - start_time).total_seconds()
+            self.metrics['peak_memory_usage'] = max(
+                process.memory_info().rss / 1024 / 1024 - initial_memory,
+                0
+            )
+            
+            if use_gpu and torch.cuda.is_available():
+                self.metrics['gpu_memory_usage'] = torch.cuda.max_memory_allocated() / 1024 / 1024
+            
+            # Calculate model convergence rates
+            for model in convergence_history:
+                convergence_rates = []
+                for fold_metrics in convergence_history[model]:
+                    convergence_rates.append(
+                        fold_metrics['rmse_history'][-1] / fold_metrics['rmse_history'][0]
+                    )
+                self.metrics['model_convergence_rate'][model] = np.mean(convergence_rates)
+
+            # Save training summary with enhanced metrics
+            self.save_training_summary(results)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in model training: {str(e)}")
+            return {}
 
     def train_catboost_model(self, X_train, X_test, y_train, y_test):
         """Train CatBoost model."""
