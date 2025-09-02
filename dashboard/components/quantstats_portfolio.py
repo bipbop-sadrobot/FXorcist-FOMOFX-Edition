@@ -30,6 +30,7 @@ class QuantStatsPortfolio(PerformanceComponent):
         self.benchmark_enabled = True
         self.show_comparison = False
         self.analysis_period = "1Y"
+        self.report_path = None  # Store path to generated HTML report
 
     @st.cache_data(ttl=timedelta(seconds=300))
     def analyze_portfolio(self, returns_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -324,9 +325,27 @@ class QuantStatsPortfolio(PerformanceComponent):
                 help="Compare multiple portfolios side by side"
             )
 
+            # Report generation section
+            st.divider()
+            st.subheader("HTML Report")
+            if st.button("📊 Generate Full Report", help="Generate comprehensive HTML report"):
+                with st.spinner("Generating HTML report..."):
+                    self.generate_html_report(data)
+                
+            if self.report_path and os.path.exists(self.report_path):
+                with open(self.report_path, 'r') as f:
+                    report_html = f.read()
+                    st.download_button(
+                        label="📥 Download HTML Report",
+                        data=report_html,
+                        file_name="portfolio_analysis_report.html",
+                        mime="text/html"
+                    )
+
             # Refresh button
             if st.button("🔄 Refresh Analysis", help="Recalculate all metrics"):
                 self.clear_cache()
+                self.report_path = None  # Clear old report
 
         # Get data from cache
         data = self._cache.get('data')
@@ -356,7 +375,47 @@ class QuantStatsPortfolio(PerformanceComponent):
             st.divider()
             self.create_portfolio_comparison(data)
 
+    def generate_html_report(self, data: Dict[str, Any]) -> None:
+        """Generate comprehensive HTML report using quantstats."""
+        if not data or 'returns' not in data:
+            st.error("No data available for report generation")
+            return
+
+        try:
+            import quantstats as qs
+            import tempfile
+            import os
+
+            returns = data['returns']
+            
+            # Prepare benchmark data if enabled
+            benchmark_returns = None
+            if self.benchmark_enabled:
+                try:
+                    benchmark_returns = qs.utils.download_returns('SPY')
+                except Exception as e:
+                    st.warning(f"Could not load benchmark data: {e}")
+
+            # Create temporary file for the report
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp:
+                # Generate the report
+                qs.reports.html(
+                    returns=returns,
+                    benchmark=benchmark_returns,
+                    output=tmp.name,
+                    title=f"Portfolio Analysis Report - {datetime.now().strftime('%Y-%m-%d')}",
+                    rf=0.02  # Risk-free rate
+                )
+                self.report_path = tmp.name
+
+            st.success("HTML report generated successfully!")
+            
+        except Exception as e:
+            st.error(f"Error generating HTML report: {e}")
+            self.report_path = None
+
     def update(self, data: Dict[str, Any]) -> None:
         """Update component with new data."""
         self._cache['data'] = data
         self.clear_cache()  # Clear cached calculations
+        self.report_path = None  # Clear old report
