@@ -608,30 +608,272 @@ class EnhancedDataLoader:
         
         return df
 
-    def _validate_synthetic_data(
+    def _generate_sentiment_cycle(
+        self,
+        num_samples: int,
+        regime_stats: Dict[str, Dict[str, float]]
+    ) -> pd.DataFrame:
+        """Generate market sentiment cycle patterns."""
+        # Initialize cycle parameters
+        cycle_length = 20
+        num_cycles = num_samples // cycle_length
+        
+        prices = []
+        for _ in range(num_cycles):
+            # Fear phase (oversold)
+            fear = np.linspace(0, -0.03, 5)  # Sharp decline
+            # Accumulation phase
+            accum = np.linspace(-0.03, -0.01, 5)  # Gradual recovery
+            # Greed phase (overbought)
+            greed = np.linspace(-0.01, 0.04, 5)  # Strong rally
+            # Distribution phase
+            dist = np.linspace(0.04, 0, 5)  # Gradual decline
+            
+            cycle = np.concatenate([fear, accum, greed, dist])
+            prices.extend(100 * (1 + cycle).cumprod())
+        
+        return self._create_ohlc_from_prices(np.array(prices[:num_samples]))
+
+    def _generate_crowd_psychology(
+        self,
+        num_samples: int,
+        regime_stats: Dict[str, Dict[str, float]]
+    ) -> pd.DataFrame:
+        """Generate crowd psychology-driven patterns."""
+        # Initialize momentum parameters
+        momentum_strength = 0.6
+        reversal_threshold = 0.8
+        
+        prices = []
+        current_price = 100
+        momentum = 0
+        
+        for _ in range(num_samples):
+            # Update momentum
+            noise = np.random.normal(0, 0.01)
+            if abs(momentum) > reversal_threshold:
+                # Crowd psychology reversal
+                momentum = -momentum * 0.7
+            else:
+                # Momentum continuation
+                momentum = momentum * momentum_strength + noise
+            
+            # Update price
+            current_price *= (1 + momentum)
+            prices.append(current_price)
+        
+        return self._create_ohlc_from_prices(np.array(prices))
+
+    def _generate_institutional_flow(
+        self,
+        num_samples: int,
+        regime_stats: Dict[str, Dict[str, float]]
+    ) -> pd.DataFrame:
+        """Generate institutional order flow patterns."""
+        prices = []
+        current_price = 100
+        
+        # Institutional parameters
+        min_position_size = 1000
+        max_position_size = 5000
+        
+        for _ in range(num_samples):
+            # Generate institutional order
+            order_size = np.random.randint(min_position_size, max_position_size)
+            is_buy = np.random.random() > 0.5
+            
+            # Price impact
+            impact = 0.0001 * order_size * (1 if is_buy else -1)
+            
+            # Add mean reversion
+            mean_reversion = 0.1 * (100 - current_price) / 100
+            
+            # Update price
+            current_price *= (1 + impact + mean_reversion)
+            prices.append(current_price)
+        
+        return self._create_ohlc_from_prices(np.array(prices))
+
+    def _generate_order_imbalance(self, length: int) -> np.ndarray:
+        """Generate realistic order book imbalance."""
+        base_imbalance = np.random.normal(0, 1, length)
+        trend = np.cumsum(np.random.normal(0, 0.1, length))
+        return base_imbalance + 0.3 * trend
+
+    def _generate_market_depth(self, length: int) -> np.ndarray:
+        """Generate market depth indicators."""
+        base_depth = np.random.lognormal(4, 0.5, length)
+        time_varying = np.sin(np.linspace(0, 4*np.pi, length))
+        return base_depth * (1 + 0.2 * time_varying)
+
+    def _generate_liquidity_score(self, length: int) -> np.ndarray:
+        """Generate liquidity scores."""
+        base_liquidity = np.random.beta(5, 2, length)
+        trend = np.cumsum(np.random.normal(0, 0.01, length))
+        return np.clip(base_liquidity + 0.1 * trend, 0, 1)
+
+    def _generate_trade_intensity(self, length: int) -> np.ndarray:
+        """Generate trading intensity patterns."""
+        base_intensity = np.random.exponential(1, length)
+        time_of_day = np.sin(np.linspace(0, 2*np.pi, length))
+        return base_intensity * (1 + 0.5 * time_of_day)
+
+    def _generate_institutional_flow_indicator(self, length: int) -> np.ndarray:
+        """Generate institutional flow indicators."""
+        flow = np.zeros(length)
+        
+        # Generate large orders
+        num_orders = length // 20
+        order_positions = np.random.choice(length, num_orders, replace=False)
+        order_sizes = np.random.lognormal(4, 1, num_orders)
+        
+        for pos, size in zip(order_positions, order_sizes):
+            # Impact lasts for several periods
+            impact_length = min(10, length - pos)
+            flow[pos:pos+impact_length] += size * np.exp(-np.arange(impact_length)/3)
+        
+        return flow
+
+    def _validate_statistical_properties(
         self,
         synthetic_df: pd.DataFrame,
         base_data: pd.DataFrame
     ) -> pd.DataFrame:
-        """Enhanced validation with parallel processing and quality metrics."""
-        with self.process_pool as pool:
-            # Statistical validation
-            futures = []
-            futures.append(pool.submit(self._validate_statistical_properties, synthetic_df, base_data))
-            futures.append(pool.submit(self._validate_microstructure, synthetic_df))
-            futures.append(pool.submit(self._validate_patterns, synthetic_df))
+        """Validate and adjust statistical properties."""
+        # Calculate returns
+        synthetic_returns = synthetic_df['close'].pct_change().dropna()
+        base_returns = base_data['close'].pct_change().dropna()
+        
+        # Match statistical moments
+        if abs(synthetic_returns.std() - base_returns.std()) > 0.1:
+            scale_factor = base_returns.std() / synthetic_returns.std()
+            synthetic_df['close'] = synthetic_df['close'] * scale_factor
+            synthetic_df['open'] = synthetic_df['open'] * scale_factor
+            synthetic_df['high'] = synthetic_df['high'] * scale_factor
+            synthetic_df['low'] = synthetic_df['low'] * scale_factor
+        
+        # Ensure positive prices
+        min_price = base_data['close'].mean() * 0.5
+        synthetic_df.loc[synthetic_df['close'] <= 0, ['open', 'high', 'low', 'close']] = min_price
+        
+        return synthetic_df
+
+    def _validate_microstructure(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Validate market microstructure features."""
+        # Validate spreads
+        df.loc[df['spread'] < 0, 'spread'] = 0
+        df.loc[df['spread'] > df['close'] * 0.01, 'spread'] = df['close'] * 0.01
+        
+        # Validate volumes
+        df.loc[df['volume'] <= 0, 'volume'] = df['volume'].median()
+        
+        # Validate order book features
+        if 'market_depth' in df.columns:
+            df.loc[df['market_depth'] <= 0, 'market_depth'] = df['market_depth'].median()
+        
+        if 'liquidity_score' in df.columns:
+            df['liquidity_score'] = np.clip(df['liquidity_score'], 0, 1)
+        
+        return df
+
+    def _validate_patterns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Validate price patterns for realism."""
+        # Check for unrealistic jumps
+        returns = df['close'].pct_change()
+        extreme_moves = abs(returns) > 0.1
+        
+        if extreme_moves.any():
+            # Smooth out extreme moves
+            smooth_window = 3
+            df.loc[extreme_moves, 'close'] = df['close'].rolling(smooth_window).mean()
             
-            # Collect results
-            for future in futures:
-                synthetic_df = future.result()
-            
-            # Quality scoring
-            quality_score = self._calculate_quality_score(synthetic_df, base_data)
-            logger.info(f"Synthetic data quality score: {quality_score:.2f}")
-            
-            # Add quality metadata
-            synthetic_df.attrs['quality_score'] = quality_score
-            synthetic_df.attrs['validation_timestamp'] = pd.Timestamp.now()
+            # Adjust OHLC accordingly
+            df.loc[extreme_moves, 'high'] = df.loc[extreme_moves, 'close'] * 1.002
+            df.loc[extreme_moves, 'low'] = df.loc[extreme_moves, 'close'] * 0.998
+            df.loc[extreme_moves, 'open'] = df.loc[extreme_moves, 'close']
+        
+        return df
+
+    def _calculate_quality_score(
+        self,
+        synthetic_df: pd.DataFrame,
+        base_data: pd.DataFrame
+    ) -> float:
+        """Calculate overall quality score for synthetic data."""
+        scores = []
+        
+        # Statistical similarity score
+        stat_score = self._calculate_statistical_similarity(synthetic_df, base_data)
+        scores.append(stat_score)
+        
+        # Pattern quality score
+        pattern_score = self._calculate_pattern_quality(synthetic_df)
+        scores.append(pattern_score)
+        
+        # Microstructure quality score
+        micro_score = self._calculate_microstructure_quality(synthetic_df)
+        scores.append(micro_score)
+        
+        # Weight and combine scores
+        weights = [0.4, 0.3, 0.3]
+        final_score = np.average(scores, weights=weights)
+        
+        return final_score
+
+    def _calculate_statistical_similarity(
+        self,
+        synthetic_df: pd.DataFrame,
+        base_data: pd.DataFrame
+    ) -> float:
+        """Calculate statistical similarity score."""
+        synthetic_returns = synthetic_df['close'].pct_change().dropna()
+        base_returns = base_data['close'].pct_change().dropna()
+        
+        # Compare statistical moments
+        moment_scores = []
+        moment_scores.append(1 - abs(synthetic_returns.mean() - base_returns.mean()))
+        moment_scores.append(1 - abs(synthetic_returns.std() - base_returns.std()) / base_returns.std())
+        moment_scores.append(1 - abs(synthetic_returns.skew() - base_returns.skew()) / max(1, abs(base_returns.skew())))
+        
+        return np.mean(moment_scores)
+
+    def _calculate_pattern_quality(self, df: pd.DataFrame) -> float:
+        """Calculate pattern quality score."""
+        returns = df['close'].pct_change().dropna()
+        
+        # Autocorrelation score
+        acf_score = 1 - abs(returns.autocorr() - 0.1)  # Expect slight autocorrelation
+        
+        # Volatility clustering score
+        vol = returns.rolling(20).std()
+        vol_cluster_score = 1 - abs(vol.autocorr() - 0.7)  # Expect strong vol clustering
+        
+        # Extreme value score
+        extreme_score = 1 - len(returns[abs(returns) > 3 * returns.std()]) / len(returns)
+        
+        return np.mean([acf_score, vol_cluster_score, extreme_score])
+
+    def _calculate_microstructure_quality(self, df: pd.DataFrame) -> float:
+        """Calculate market microstructure quality score."""
+        scores = []
+        
+        # Spread quality
+        if 'spread' in df.columns:
+            spread_score = 1 - (df['spread'] / df['close']).mean()  # Lower spreads are better
+            scores.append(spread_score)
+        
+        # Volume profile
+        if 'volume' in df.columns:
+            volume_score = 1 - abs(df['volume'].skew())  # Should be slightly right-skewed
+            scores.append(volume_score)
+        
+        # Order book quality
+        if 'market_depth' in df.columns and 'liquidity_score' in df.columns:
+            depth_score = df['market_depth'].autocorr()  # Should show persistence
+            liquidity_score = df['liquidity_score'].mean()  # Higher liquidity is better
+            scores.extend([depth_score, liquidity_score])
+        
+        return np.mean(scores) if scores else 0.5
         
         return synthetic_df
 
