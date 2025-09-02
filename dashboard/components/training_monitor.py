@@ -368,8 +368,112 @@ class TrainingMonitor(PerformanceComponent):
         - **Comprehensive Logging**: Full experiment tracking
         """)
 
+    def _render_metrics_history(self, chart_type: str):
+        """Render historical metrics visualization."""
+        # Create figure
+        fig = go.Figure()
+        
+        # Add metrics based on availability
+        metrics_to_plot = {
+            'Training Loss': 'training_loss',
+            'Validation Loss': 'validation_loss',
+            'Learning Rate': 'learning_rate'
+        }
+        
+        for label, key in metrics_to_plot.items():
+            if st.session_state.metrics_history[key]:
+                data = list(st.session_state.metrics_history[key])
+                if chart_type == 'Area':
+                    fig.add_trace(go.Scatter(
+                        y=data,
+                        name=label,
+                        fill='tonexty'
+                    ))
+                elif chart_type == 'Bar':
+                    fig.add_trace(go.Bar(
+                        y=data,
+                        name=label
+                    ))
+                else:  # Line chart
+                    fig.add_trace(go.Scatter(
+                        y=data,
+                        name=label,
+                        mode='lines'
+                    ))
+        
+        # Update layout
+        fig.update_layout(
+            height=400,
+            title='Training Metrics History',
+            xaxis_title='Iteration',
+            yaxis_title='Value',
+            hovermode='x unified'
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Resource usage history
+        if any(len(st.session_state.metrics_history[k]) > 0 
+               for k in ['cpu_usage', 'memory_usage', 'gpu_memory']):
+            fig = go.Figure()
+            
+            # CPU Usage
+            if st.session_state.metrics_history['cpu_usage']:
+                fig.add_trace(go.Scatter(
+                    y=list(st.session_state.metrics_history['cpu_usage']),
+                    name='CPU Usage (%)',
+                    line=dict(color='blue')
+                ))
+            
+            # Memory Usage
+            if st.session_state.metrics_history['memory_usage']:
+                fig.add_trace(go.Scatter(
+                    y=list(st.session_state.metrics_history['memory_usage']),
+                    name='Memory (MB)',
+                    line=dict(color='green')
+                ))
+            
+            # GPU Memory
+            if st.session_state.metrics_history['gpu_memory']:
+                fig.add_trace(go.Scatter(
+                    y=list(st.session_state.metrics_history['gpu_memory']),
+                    name='GPU Memory (MB)',
+                    line=dict(color='red')
+                ))
+            
+            fig.update_layout(
+                height=300,
+                title='Resource Usage History',
+                xaxis_title='Time',
+                yaxis_title='Usage',
+                hovermode='x unified'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+
+    def _apply_smoothing(self, data: List[float], factor: float) -> List[float]:
+        """Apply exponential smoothing to data."""
+        smoothed = []
+        if not data:
+            return smoothed
+        
+        smoothed.append(data[0])
+        for n in range(1, len(data)):
+            smoothed.append(smoothed[-1] * factor + data[n] * (1 - factor))
+        return smoothed
+
+    def _get_colorway(self, scheme: str) -> List[str]:
+        """Get color scheme for plots."""
+        schemes = {
+            'Default': None,  # Use Plotly default
+            'Viridis': px.colors.sequential.Viridis,
+            'Plasma': px.colors.sequential.Plasma,
+            'Magma': px.colors.sequential.Magma
+        }
+        return schemes.get(scheme)
+
     def render(self) -> None:
-        """Render the training monitor component."""
+        """Render the enhanced training monitor component."""
         st.subheader(self.config.title)
         st.markdown(self.config.description)
 
@@ -380,25 +484,57 @@ class TrainingMonitor(PerformanceComponent):
             st.metric("Trained Models", metrics['trained_models'])
             st.metric("Training Sessions", metrics['training_sessions'])
             st.metric("Processed Datasets", metrics['processed_datasets'])
+            
+            # Quick actions
+            st.subheader("Quick Actions")
+            if st.button("Clear History"):
+                for key in st.session_state.metrics_history:
+                    st.session_state.metrics_history[key] = []
+            
+            if st.button("Export Metrics"):
+                metrics_df = pd.DataFrame(st.session_state.metrics_history)
+                st.download_button(
+                    "Download CSV",
+                    metrics_df.to_csv(index=False),
+                    "training_metrics.csv",
+                    "text/csv"
+                )
 
         # Main content in tabs
         tab1, tab2, tab3, tab4 = st.tabs([
-            "📊 Overview",
-            "🔧 Feature Engineering",
-            "📈 Model Comparison",
+            "📊 Real-time Monitor",
+            "🎮 Training Controls",
+            "📈 Analysis",
             "📚 Documentation"
         ])
 
         with tab1:
+            self._render_real_time_metrics()
             self._render_system_improvements()
-            self._render_performance_metrics()
-            self._render_training_history()
 
         with tab2:
+            self._render_training_controls()
             self._render_feature_engineering()
 
         with tab3:
             self._render_model_comparison()
+            
+            # Add custom metric analysis
+            with st.expander("🔍 Custom Metric Analysis"):
+                metric_name = st.text_input("Metric Name")
+                metric_formula = st.text_area("Formula (Python expression)")
+                if st.button("Add Metric"):
+                    try:
+                        # Safely evaluate the formula
+                        import numpy as np
+                        data = {k: np.array(v) for k, v in 
+                               st.session_state.metrics_history.items() 
+                               if isinstance(v, list)}
+                        result = eval(metric_formula, {"np": np}, data)
+                        st.session_state.metrics_history['custom_metrics'][metric_name] = result
+                        st.success(f"Added metric: {metric_name}")
+                    except Exception as e:
+                        st.error(f"Error computing metric: {str(e)}")
 
         with tab4:
             self._render_pipeline_steps()
