@@ -365,85 +365,144 @@ class AutomatedTrainingPipeline:
         logger.info(f"Selected {len(final_features)} features from {len(feature_cols)} total")
         return final_features
 
-    def train_models(self, df: pd.DataFrame, use_gpu: bool = True) -> Dict[str, Dict]:
-        """Train multiple models with advanced optimization and monitoring."""
-        logger.info("Starting enhanced model training pipeline")
+    def train_models(
+        self,
+        df: pd.DataFrame,
+        use_gpu: bool = True,
+        distributed: bool = True,
+        optimization_config: Optional[Dict] = None
+    ) -> Dict[str, Dict]:
+        """Train multiple models with distributed processing and advanced optimization.
+        
+        Args:
+            df: Training data
+            use_gpu: Whether to use GPU acceleration
+            distributed: Whether to use distributed training
+            optimization_config: Configuration for advanced optimization
+        """
+        logger.info("Starting distributed training pipeline with advanced optimization")
         start_time = datetime.now()
         
         # Initialize monitoring
         process = psutil.Process(os.getpid())
         initial_memory = process.memory_info().rss / 1024 / 1024
         
+        # Default optimization config
+        default_config = {
+            'early_stopping_rounds': 50,
+            'learning_rate_schedule': 'cosine',
+            'warmup_epochs': 5,
+            'max_epochs': 1000,
+            'batch_size': 1024,
+            'validation_frequency': 10
+        }
+        optimization_config = {**default_config, **(optimization_config or {})}
+        
         results = {}
         convergence_history = {}
+        
+        # Initialize distributed training if enabled
+        if distributed and torch.cuda.device_count() > 1:
+            logger.info(f"Using {torch.cuda.device_count()} GPUs for distributed training")
+            torch.distributed.init_process_group(backend='nccl')
 
         try:
-            # Enhanced feature selection with importance tracking
-            feature_cols = self._select_features(df)
-            df['target'] = df['close'].shift(-1)
-            df = df.dropna()
+            # Enhanced feature selection with parallel processing
+            with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+                feature_cols = self._select_features(df)
+                df['target'] = df['close'].shift(-1)
+                df = df.dropna()
             
             # Advanced scaling with robustness to outliers
             scaler = RobustScaler()
             scaled_features = scaler.fit_transform(df[feature_cols])
             
-            # Time series cross-validation
-            tscv = TimeSeriesSplit(n_splits=5)
+            # Time series cross-validation with expanding window
+            tscv = TimeSeriesSplit(n_splits=5, test_size=len(df) // 10)
             
-            # Convert to tensors if using GPU
-            if use_gpu and torch.cuda.is_available():
-                X = torch.tensor(scaled_features, dtype=torch.float32, device=self.device)
-                y = torch.tensor(df['target'].values, dtype=torch.float32, device=self.device)
-            else:
-                X = scaled_features
-                y = df['target'].values
-
-            # Train models with cross-validation
-            for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
-                X_train = X[train_idx]
-                X_test = X[test_idx]
-                y_train = y[train_idx]
-                y_test = y[test_idx]
-                
-                # Train CatBoost with advanced monitoring
-                fold_results = self.train_catboost_model(
-                    X_train, X_test, y_train, y_test,
-                    feature_names=feature_cols,
-                    fold=fold
-                )
-                
-                # Update convergence history
-                if 'catboost' not in convergence_history:
-                    convergence_history['catboost'] = []
-                convergence_history['catboost'].append(fold_results['metrics'])
-                
-                # Track feature importance
-                self.metrics['feature_importance_history'].append({
-                    'fold': fold,
-                    'importance': fold_results['feature_importance'],
-                    'features': feature_cols
-                })
-                
-                results[f'catboost_fold_{fold}'] = fold_results
-
-            # Update metrics
-            self.metrics['training_time'] = (datetime.now() - start_time).total_seconds()
-            self.metrics['peak_memory_usage'] = max(
-                process.memory_info().rss / 1024 / 1024 - initial_memory,
-                0
+            # Prepare data for distributed training
+            dataset = self._prepare_training_dataset(
+                scaled_features,
+                df['target'].values,
+                optimization_config['batch_size']
             )
             
-            if use_gpu and torch.cuda.is_available():
-                self.metrics['gpu_memory_usage'] = torch.cuda.max_memory_allocated() / 1024 / 1024
-            
-            # Calculate model convergence rates
-            for model in convergence_history:
-                convergence_rates = []
-                for fold_metrics in convergence_history[model]:
-                    convergence_rates.append(
-                        fold_metrics['rmse_history'][-1] / fold_metrics['rmse_history'][0]
-                    )
-                self.metrics['model_convergence_rate'][model] = np.mean(convergence_rates)
+            # Initialize models for parallel training
+            models = {
+                'catboost': self._init_catboost_model(optimization_config),
+                'lightgbm': self._init_lightgbm_model(optimization_config),
+                'xgboost': self._init_xgboost_model(optimization_config)
+            }
+
+            # Train models in parallel with cross-validation
+            with ProcessPoolExecutor(max_workers=len(models)) as executor:
+                future_to_model = {}
+                
+                for fold, (train_idx, test_idx) in enumerate(tscv.split(dataset)):
+                    train_data = self._get_fold_data(dataset, train_idx)
+                    test_data = self._get_fold_data(dataset, test_idx)
+                    
+                    for model_name, model in models.items():
+                        future = executor.submit(
+                            self._train_model_with_optimization,
+                            model=model,
+                            model_name=model_name,
+                            train_data=train_data,
+                            test_data=test_data,
+                            feature_names=feature_cols,
+                            fold=fold,
+                            config=optimization_config
+                        )
+                        future_to_model[future] = (model_name, fold)
+                
+                # Collect results
+                for future in concurrent.futures.as_completed(future_to_model):
+                    model_name, fold = future_to_model[future]
+                    try:
+                        fold_results = future.result()
+                        
+                        # Update convergence history
+                        if model_name not in convergence_history:
+                            convergence_history[model_name] = []
+                        convergence_history[model_name].append(fold_results['metrics'])
+                        
+                        # Track feature importance
+                        self.metrics['feature_importance_history'].append({
+                            'model': model_name,
+                            'fold': fold,
+                            'importance': fold_results['feature_importance'],
+                            'features': feature_cols
+                        })
+                        
+                        results[f'{model_name}_fold_{fold}'] = fold_results
+                    except Exception as e:
+                        logger.error(f"Error in {model_name} fold {fold}: {str(e)}")
+                
+            # Create ensemble model from best performers
+            ensemble_results = self._create_ensemble_model(results, dataset)
+            results['ensemble'] = ensemble_results
+
+            # Update metrics
+            training_time = (datetime.now() - start_time).total_seconds()
+            self.metrics.update({
+                'training_time': training_time,
+                'peak_memory_usage': max(
+                    process.memory_info().rss / 1024 / 1024 - initial_memory,
+                    0
+                ),
+                'gpu_memory_usage': (
+                    torch.cuda.max_memory_allocated() / 1024 / 1024
+                    if use_gpu and torch.cuda.is_available() else None
+                ),
+                'training_throughput': len(df) / training_time,
+                'model_convergence_rate': {
+                    model: np.mean([
+                        metrics['rmse_history'][-1] / metrics['rmse_history'][0]
+                        for metrics in model_history
+                    ])
+                    for model, model_history in convergence_history.items()
+                }
+            })
 
             # Save training summary with enhanced metrics
             self.save_training_summary(results)
@@ -451,8 +510,117 @@ class AutomatedTrainingPipeline:
             return results
             
         except Exception as e:
-            logger.error(f"Error in model training: {str(e)}")
+            logger.error(f"Error in distributed training: {str(e)}")
             return {}
+        finally:
+            if distributed and torch.cuda.device_count() > 1:
+                torch.distributed.destroy_process_group()
+
+    def _prepare_training_dataset(
+        self,
+        features: np.ndarray,
+        targets: np.ndarray,
+        batch_size: int
+    ) -> torch.utils.data.DataLoader:
+        """Prepare dataset for distributed training."""
+        dataset = torch.utils.data.TensorDataset(
+            torch.tensor(features, dtype=torch.float32),
+            torch.tensor(targets, dtype=torch.float32)
+        )
+        
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset) \
+            if torch.distributed.is_initialized() else None
+        
+        return torch.utils.data.DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            num_workers=self.num_workers,
+            pin_memory=True
+        )
+
+    def _train_model_with_optimization(
+        self,
+        model: Any,
+        model_name: str,
+        train_data: torch.utils.data.DataLoader,
+        test_data: torch.utils.data.DataLoader,
+        feature_names: List[str],
+        fold: int,
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Train a model with advanced optimization strategies."""
+        logger.info(f"Training {model_name} (fold {fold}) with optimization")
+        
+        # Initialize optimizer and scheduler
+        optimizer = self._get_optimizer(model, config)
+        scheduler = self._get_scheduler(optimizer, config)
+        
+        # Training loop with early stopping
+        best_loss = float('inf')
+        patience = config['early_stopping_rounds']
+        patience_counter = 0
+        loss_history = []
+        
+        for epoch in range(config['max_epochs']):
+            # Training step
+            train_loss = self._train_epoch(model, train_data, optimizer)
+            
+            # Validation step
+            if epoch % config['validation_frequency'] == 0:
+                val_loss = self._validate_epoch(model, test_data)
+                loss_history.append(val_loss)
+                
+                # Early stopping check
+                if val_loss < best_loss:
+                    best_loss = val_loss
+                    patience_counter = 0
+                    self._save_model_checkpoint(model, model_name, fold)
+                else:
+                    patience_counter += 1
+                
+                if patience_counter >= patience:
+                    logger.info(f"Early stopping triggered for {model_name} (fold {fold})")
+                    break
+            
+            # Update learning rate
+            if scheduler is not None:
+                scheduler.step()
+        
+        # Load best model
+        model = self._load_model_checkpoint(model_name, fold)
+        
+        # Generate predictions and metrics
+        predictions = model.predict(test_data)
+        metrics = self._calculate_metrics(predictions, test_data)
+        
+        return {
+            'model': model,
+            'metrics': metrics,
+            'loss_history': loss_history,
+            'feature_importance': self._get_feature_importance(model, feature_names)
+        }
+
+    def _create_ensemble_model(
+        self,
+        results: Dict[str, Dict],
+        dataset: torch.utils.data.DataLoader
+    ) -> Dict[str, Any]:
+        """Create an ensemble model from the best performing models."""
+        # Select best models based on validation performance
+        best_models = self._select_best_models(results)
+        
+        # Create ensemble
+        ensemble = self._create_weighted_ensemble(best_models)
+        
+        # Evaluate ensemble
+        ensemble_metrics = self._evaluate_ensemble(ensemble, dataset)
+        
+        return {
+            'model': ensemble,
+            'metrics': ensemble_metrics,
+            'component_models': [model.name for model in best_models]
+        }
 
     def train_catboost_model(self, X_train, X_test, y_train, y_test):
         """Train CatBoost model."""
