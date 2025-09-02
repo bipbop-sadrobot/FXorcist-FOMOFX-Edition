@@ -3,7 +3,7 @@ Enhanced Data loading utility for the Forex AI dashboard.
 Provides advanced caching strategies and performance optimizations.
 """
 
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple, Any
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -13,6 +13,10 @@ from functools import lru_cache
 import pyarrow.parquet as pq
 import json
 import quantstats as qs
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+from sklearn.preprocessing import StandardScaler
+import torch
+from torch.utils.data import Dataset, DataLoader
 
 from forex_ai_dashboard.pipeline.evaluation_metrics import EvaluationMetrics
 from forex_ai_dashboard.models.model_hierarchy import ModelHierarchy
@@ -22,14 +26,31 @@ from .quantstats_analytics import QuantStatsAnalytics
 logger = logging.getLogger(__name__)
 
 class EnhancedDataLoader:
-    """Enhanced utility class for efficient data loading and management with advanced caching."""
+    """Enhanced utility class for efficient data loading and management with advanced caching and data synthesis."""
 
-    def __init__(self):
-        """Initialize data loader with paths and advanced cache settings."""
+    def __init__(self, num_workers: int = 4):
+        """Initialize data loader with paths and advanced cache settings.
+        
+        Args:
+            num_workers: Number of worker processes for parallel processing
+        """
         self.data_dir = Path('data/processed')
         self.eval_dir = Path('evaluation_results')
         self.model_dir = Path('models/hierarchy')
         self.cache_timeout = 300  # 5 minutes
+        self.num_workers = num_workers
+        
+        # Initialize parallel processing pools
+        self.thread_pool = ThreadPoolExecutor(max_workers=num_workers)
+        self.process_pool = ProcessPoolExecutor(max_workers=num_workers)
+        
+        # Initialize data synthesis settings
+        self.synthesis_config = {
+            'edge_case_ratio': 0.2,
+            'augmentation_ratio': 0.3,
+            'noise_level': 0.05,
+            'trend_strength': 0.7
+        }
 
         # Initialize advanced caching system
         self.cache_manager = get_cache_manager()
@@ -205,17 +226,108 @@ class EnhancedDataLoader:
 
         return result
 
+    def generate_synthetic_data(
+        self,
+        base_data: pd.DataFrame,
+        num_samples: int = 1000,
+        include_edge_cases: bool = True
+    ) -> pd.DataFrame:
+        """Generate synthetic forex data including edge cases.
+        
+        Args:
+            base_data: Base data to generate synthetic samples from
+            num_samples: Number of synthetic samples to generate
+            include_edge_cases: Whether to include edge cases
+            
+        Returns:
+            DataFrame containing synthetic data
+        """
+        synthetic_data = []
+        
+        # Calculate base statistics
+        returns = base_data['close'].pct_change().dropna()
+        mean_return = returns.mean()
+        std_return = returns.std()
+        
+        # Generate normal market conditions
+        normal_samples = int(num_samples * (1 - self.synthesis_config['edge_case_ratio']))
+        normal_returns = np.random.normal(mean_return, std_return, normal_samples)
+        
+        if include_edge_cases:
+            # Generate trend reversals
+            trend_samples = int(num_samples * self.synthesis_config['edge_case_ratio'] * 0.4)
+            trend_returns = self._generate_trend_reversals(mean_return, std_return, trend_samples)
+            
+            # Generate volatility clusters
+            vol_samples = int(num_samples * self.synthesis_config['edge_case_ratio'] * 0.3)
+            vol_returns = self._generate_volatility_clusters(std_return, vol_samples)
+            
+            # Generate flash crashes
+            crash_samples = int(num_samples * self.synthesis_config['edge_case_ratio'] * 0.3)
+            crash_returns = self._generate_flash_crashes(mean_return, std_return, crash_samples)
+            
+            all_returns = np.concatenate([normal_returns, trend_returns, vol_returns, crash_returns])
+        else:
+            all_returns = normal_returns
+            
+        # Convert returns to prices
+        base_price = base_data['close'].iloc[-1]
+        prices = base_price * (1 + all_returns).cumprod()
+        
+        # Create synthetic OHLC data
+        synthetic_df = pd.DataFrame({
+            'timestamp': pd.date_range(start=base_data.index[-1], periods=len(prices), freq='1min'),
+            'close': prices
+        })
+        
+        synthetic_df['open'] = synthetic_df['close'].shift(1)
+        synthetic_df['high'] = synthetic_df[['open', 'close']].max(axis=1) * (1 + np.random.uniform(0, 0.001, len(synthetic_df)))
+        synthetic_df['low'] = synthetic_df[['open', 'close']].min(axis=1) * (1 - np.random.uniform(0, 0.001, len(synthetic_df)))
+        synthetic_df['volume'] = np.random.lognormal(10, 1, len(synthetic_df))
+        
+        synthetic_df.set_index('timestamp', inplace=True)
+        return synthetic_df
+
+    def _generate_trend_reversals(self, mean: float, std: float, samples: int) -> np.ndarray:
+        """Generate trend reversal patterns."""
+        trends = []
+        for _ in range(samples // 10):  # Generate in chunks of 10 samples
+            # Create uptrend followed by reversal
+            uptrend = np.linspace(0, self.synthesis_config['trend_strength'], 5) * std + mean
+            reversal = np.linspace(self.synthesis_config['trend_strength'], -self.synthesis_config['trend_strength'], 5) * std + mean
+            trends.extend(uptrend)
+            trends.extend(reversal)
+        return np.array(trends[:samples])
+
+    def _generate_volatility_clusters(self, std: float, samples: int) -> np.ndarray:
+        """Generate volatility cluster patterns."""
+        base_vol = np.random.normal(0, std, samples)
+        vol_multiplier = np.random.gamma(2, 2, samples)
+        return base_vol * vol_multiplier
+
+    def _generate_flash_crashes(self, mean: float, std: float, samples: int) -> np.ndarray:
+        """Generate flash crash patterns."""
+        crashes = []
+        crash_size = samples // 5
+        for _ in range(5):
+            pre_crash = np.random.normal(mean, std, crash_size // 2)
+            crash = np.random.normal(-5*std, 2*std, crash_size // 4)
+            recovery = np.random.normal(2*mean, std, crash_size // 4)
+            crashes.extend(np.concatenate([pre_crash, crash, recovery]))
+        return np.array(crashes[:samples])
+
     def load_forex_data(
         self,
         timeframe: str = "1H",
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
-        use_cache: bool = True
+        use_cache: bool = True,
+        augment_data: bool = False
     ) -> Tuple[pd.DataFrame, List[str]]:
-        """Load and validate forex data with advanced caching."""
-        cache_key = self._generate_cache_key('forex_data', timeframe, start_date, end_date)
+        """Load and validate forex data with advanced caching and optional augmentation."""
+        cache_key = self._generate_cache_key('forex_data', timeframe, start_date, end_date, augment_data)
 
-        if use_cache:
+        if use_cache and not augment_data:
             # Try DataFrame cache first
             cached_df = self.df_cache.get_dataframe(cache_key)
             if cached_df is not None:
@@ -227,19 +339,38 @@ class EnhancedDataLoader:
         start_time = datetime.now()
 
         try:
-            latest_file = self._get_latest_file(self.data_dir, "*.parquet")
-            if not latest_file:
+            # Use parallel processing for file reading
+            futures = []
+            for file in self.data_dir.glob("*.parquet"):
+                futures.append(
+                    self.process_pool.submit(
+                        pq.read_table,
+                        file,
+                        columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                    )
+                )
+            
+            # Combine results
+            tables = [f.result() for f in futures]
+            if not tables:
                 return pd.DataFrame(), ["No data files found"]
+            
+            df = pd.concat([table.to_pandas() for table in tables])
 
-            # Read parquet file efficiently
-            df = pq.read_table(
-                latest_file,
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
-            ).to_pandas()
-
-            # Set timestamp as index
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df.set_index('timestamp', inplace=True)
+            # Process data in parallel
+            with self.process_pool as pool:
+                # Set timestamp as index
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df.set_index('timestamp', inplace=True)
+                
+                # Sort index
+                df.sort_index(inplace=True)
+                
+                if augment_data:
+                    # Generate synthetic data
+                    synthetic_df = self.generate_synthetic_data(df)
+                    df = pd.concat([df, synthetic_df])
+                    df.sort_index(inplace=True)
 
             # Resample to desired timeframe
             if timeframe != "1M":
