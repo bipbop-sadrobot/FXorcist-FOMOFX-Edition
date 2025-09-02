@@ -7,6 +7,10 @@ loguru==0.7.2
 numpy==1.26.4
 pandas==2.2.1
 plotly==5.24.1  # Verified compatible version
+quantstats>=0.0.59  # Core quantstats functionality
+econml>=0.14.1  # For causal analysis
+statsmodels>=0.14.1  # For advanced statistical analysis
+networkx>=3.4.0  # For decomposition analysis
 python-dotenv==1.0.1
 requests==2.31.0
 scikit-learn==1.4.2
@@ -19,6 +23,25 @@ urllib3==2.2.0
 kaleido==0.2.1
 xgboost==2.0.3
 catboost
+lightgbm>=4.0.0
 torch_geometric
 torch_geometric_temporal
 pytorch-forecasting
+# Additional dependencies identified from code analysis
+psutil>=5.9.0
+empyrical>=0.5.5
+scipy>=1.11.0
+scikit-learn>=1.4.0
+pyarrow>=14.0.0
+matplotlib>=3.7.0
+watchdog>=3.0.0
+pyyaml>=6.0.0
+aiofiles>=23.0.0
+ta>=0.10.2
+redis>=4.6.0
+joblib>=1.3.0
+diskcache>=5.6.0
+optuna>=3.5.0
+mlflow>=2.10.0
+seaborn>=0.12.0
+cachetools>=5.3.0
