@@ -45,7 +45,6 @@ class SystemMonitor(SystemStatusComponent):
             'pipeline_latency': []
         }
     
-    @cache_data(ttl_seconds=60)
     def _get_system_metrics(self) -> Dict[str, float]:
         """Get current system resource metrics."""
         try:

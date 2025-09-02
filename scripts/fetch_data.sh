@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+# set -euo pipefail  # Commented out for debugging
 
 SOURCE="histdata"
 SYMBOLS=""
@@ -34,7 +34,8 @@ URL="https://www.histdata.com/download-free-forex-data/?/ascii/1-minute-bar-quot
 
 # Download the HTML page
 echo "[INFO] Fetching download page: $URL"
-HTML=$(curl -sSL "$URL" -H "User-Agent: Mozilla/5.0")
+HTML=$(curl -sSL -c cookies.txt "$URL" -H "User-Agent: Mozilla/5.0")
+echo "$HTML" > debug_page.html
 
 # Extract the tk token from the hidden form
 INPUT_TK=$(echo "$HTML" | grep -o '<input [^>]*id="tk"[^>]*>')
@@ -57,7 +58,7 @@ FXPAIR=$(echo "$SYMBOLS" | tr '[:lower:]' '[:upper:]')  # Ensure uppercase
 
 # Download the ZIP via POST to get.php
 echo "[INFO] Downloading ZIP using token: $TK"
-curl -sSL -X POST "https://www.histdata.com/get.php" \
+curl -L -b cookies.txt -c cookies.txt -X POST "https://www.histdata.com/get.php" \
   -H "User-Agent: Mozilla/5.0" \
   -H "Origin: https://www.histdata.com" \
   -H "Referer: $URL" \
@@ -67,7 +68,16 @@ curl -sSL -X POST "https://www.histdata.com/get.php" \
   --data "platform=$PLATFORM" \
   --data "timeframe=$TIMEFRAME" \
   --data "fxpair=$FXPAIR" \
-  -o "$ZIPFILE"
+  | tee "$ZIPFILE"
+
+# Check if the downloaded file is a valid zip
+if ! file "$ZIPFILE" | grep -q "Zip archive"; then
+  echo "[ERROR] Downloaded file is not a zip archive"
+  echo "[DEBUG] File type: $(file "$ZIPFILE")"
+  echo "[DEBUG] First 500 bytes:"
+  head -c 500 "$ZIPFILE" | cat
+  exit 1
+fi
 
 # Extract
 unzip -q "$ZIPFILE" -d "$TMPDIR"

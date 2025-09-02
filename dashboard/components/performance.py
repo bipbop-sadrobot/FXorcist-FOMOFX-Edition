@@ -3,7 +3,7 @@ Performance metrics visualization component for the Forex AI dashboard.
 Handles PnL analysis, drawdowns, Sharpe ratios, and risk metrics.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple, Any
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
@@ -38,8 +38,8 @@ class PerformanceMetrics(PerformanceComponent):
         self.show_drawdowns = True
         self.show_distributions = True
     
-    @cache_data(ttl_seconds=300)
-    def calculate_performance_metrics(self, data: Dict) -> Dict[str, pd.Series]:
+    @st.cache_data(ttl=timedelta(seconds=300))
+    def calculate_performance_metrics(self, data: dict) -> dict[str, pd.Series]:
         """Calculate comprehensive performance metrics."""
         if not data or 'returns' not in data:
             return {}
@@ -66,20 +66,15 @@ class PerformanceMetrics(PerformanceComponent):
         
         return metrics
     
-    @cache_data(ttl_seconds=300)
-    def analyze_drawdowns(self, returns: pd.Series) -> Dict[str, Any]:
+    @st.cache_data(ttl=timedelta(seconds=300))
+    def analyze_drawdowns(self, returns: pd.Series) -> dict[str, Any]:
         """Perform detailed drawdown analysis."""
         drawdowns = calculate_drawdowns(returns)
         
-        # Find drawdown periods
-        is_drawdown = drawdowns < 0
-        drawdown_starts = is_drawdown[is_drawdown].index[0:1]
-        drawdown_ends = is_drawdown[~is_drawdown].index[0:1]
-        
         # Calculate drawdown statistics
         max_drawdown = drawdowns.min()
-        avg_drawdown = drawdowns[drawdowns < 0].mean()
-        drawdown_duration = (drawdown_ends - drawdown_starts).mean()
+        avg_drawdown = drawdowns[drawdowns < 0].mean() if (drawdowns < 0).any() else 0.0
+        drawdown_duration = pd.Timedelta(days=0)  # Placeholder, would need proper calculation
         
         return {
             'max_drawdown': max_drawdown,
@@ -88,7 +83,7 @@ class PerformanceMetrics(PerformanceComponent):
             'drawdown_series': drawdowns
         }
     
-    def create_figure(self, data: Dict) -> go.Figure:
+    def create_figure(self, data: dict) -> go.Figure:
         """Create performance visualization figure."""
         if not data or 'returns' not in data:
             return None
@@ -171,7 +166,7 @@ class PerformanceMetrics(PerformanceComponent):
         
         return fig
     
-    def create_distribution_figure(self, data: Dict) -> go.Figure:
+    def create_distribution_figure(self, data: dict) -> go.Figure:
         """Create return distribution visualization."""
         if not data or 'returns' not in data:
             return None
@@ -265,7 +260,7 @@ class PerformanceMetrics(PerformanceComponent):
             if fig_dist:
                 st.plotly_chart(fig_dist, use_container_width=True)
     
-    def update(self, data: Dict) -> None:
+    def update(self, data: dict) -> None:
         """Update component with new data."""
         self._cache['data'] = data
         self.clear_cache()  # Clear cached calculations

@@ -1179,6 +1179,63 @@ class TrainingMonitor(PerformanceComponent):
             self._render_pipeline_steps()
             self._render_usage_instructions()
 
+    def calculate_performance_metrics(self, data: Any) -> dict[str, pd.Series]:
+        """Calculate performance metrics over time."""
+        if not data or 'returns' not in data:
+            return {}
+
+        returns = data['returns']
+        metrics = {}
+
+        # Basic performance metrics
+        metrics['cumulative_returns'] = (1 + returns).cumprod() - 1
+        metrics['rolling_sharpe'] = returns.rolling(window=30).mean() / returns.rolling(window=30).std() * np.sqrt(252)
+        metrics['rolling_volatility'] = returns.rolling(window=30).std() * np.sqrt(252)
+
+        return metrics
+
+    def analyze_drawdowns(self, returns: pd.Series) -> dict[str, Any]:
+        """Analyze drawdowns from return series."""
+        if returns.empty:
+            return {}
+
+        # Calculate drawdowns
+        wealth_index = (1 + returns).cumprod()
+        previous_peaks = wealth_index.expanding(min_periods=1).max()
+        drawdowns = (wealth_index - previous_peaks) / previous_peaks
+
+        return {
+            'drawdowns': drawdowns,
+            'max_drawdown': drawdowns.min(),
+            'current_drawdown': drawdowns.iloc[-1],
+            'drawdown_duration': (drawdowns < 0).astype(int).groupby((drawdowns >= 0).cumsum()).cumsum()
+        }
+
+    def create_figure(self, data: Any) -> go.Figure:
+        """Create plotly figure for visualization."""
+        if not data or 'returns' not in data:
+            return go.Figure()
+
+        returns = data['returns']
+        cumulative_returns = (1 + returns).cumprod() - 1
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=cumulative_returns.index,
+            y=cumulative_returns.values * 100,
+            name='Cumulative Returns',
+            line=dict(color='blue', width=2)
+        ))
+
+        fig.update_layout(
+            title='Training Performance',
+            xaxis_title='Date',
+            yaxis_title='Cumulative Return (%)',
+            height=400
+        )
+
+        return fig
+
     def update(self, data: Dict[str, Any]) -> None:
         """Update component with new data."""
         self._cache['data'] = data

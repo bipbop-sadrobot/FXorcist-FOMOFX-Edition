@@ -5,7 +5,7 @@ Provides base classes and interfaces for consistent component implementation.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Any, Callable
+from typing import List, Optional, Any, Callable
 from dataclasses import dataclass
 from functools import lru_cache
 import pandas as pd
@@ -66,7 +66,7 @@ class MetricsComponent(DashboardComponent):
     """Base class for metrics display components."""
     
     @abstractmethod
-    def calculate_metrics(self, data: Any) -> Dict[str, float]:
+    def calculate_metrics(self, data: Any) -> dict[str, float]:
         """Calculate metrics from data."""
         pass
     
@@ -82,12 +82,12 @@ class PerformanceComponent(VisualizationComponent):
     """Base class for performance analysis components."""
     
     @abstractmethod
-    def calculate_performance_metrics(self, data: Any) -> Dict[str, pd.Series]:
+    def calculate_performance_metrics(self, data: Any) -> dict[str, pd.Series]:
         """Calculate performance metrics over time."""
         pass
     
     @abstractmethod
-    def analyze_drawdowns(self, returns: pd.Series) -> Dict[str, Any]:
+    def analyze_drawdowns(self, returns: pd.Series) -> dict[str, Any]:
         """Analyze drawdowns from return series."""
         pass
 
@@ -95,7 +95,7 @@ class SystemStatusComponent(DashboardComponent):
     """Base class for system status components."""
     
     @abstractmethod
-    def check_status(self) -> Dict[str, bool]:
+    def check_status(self) -> dict[str, bool]:
         """Check system component status."""
         pass
     
@@ -120,7 +120,7 @@ def cache_data(ttl_seconds: int = 300) -> Callable:
     return decorator
 
 # Common utility functions
-def calculate_rolling_metrics(returns: pd.Series, window: int = 252) -> Dict[str, pd.Series]:
+def calculate_rolling_metrics(returns: pd.Series, window: int = 252) -> dict[str, pd.Series]:
     """Calculate rolling financial metrics."""
     return {
         'rolling_sharpe': returns.rolling(window).mean() / returns.rolling(window).std() * np.sqrt(252),

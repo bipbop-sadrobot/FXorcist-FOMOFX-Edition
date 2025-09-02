@@ -1,16 +1,19 @@
 import pandas as pd
 import numpy as np
 import logging
-from typing import Dict, List, Optional, Union, Callable
+from typing import List, Optional, Union, Callable
 from pathlib import Path
 from datetime import datetime
 import json
 from dataclasses import dataclass, asdict
 from scipy import stats
-import empyrical as ep  # For financial metrics
+# import empyrical as ep  # For financial metrics - replaced with manual calculations  # For financial metrics
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import psutil
 import torch
+
+# Ensure logs directory exists
+Path("logs").mkdir(parents=True, exist_ok=True)
 
 # Configure logging
 logging.basicConfig(
@@ -23,21 +26,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Financial metrics calculation functions
+def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.02) -> float:
+    """Calculate Sharpe ratio."""
+    if returns.std() == 0:
+        return 0.0
+    excess_returns = returns - risk_free_rate / 252  # Daily risk-free rate
+    return excess_returns.mean() / returns.std() * np.sqrt(252)
+
+def calculate_sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.02) -> float:
+    """Calculate Sortino ratio."""
+    downside_returns = returns[returns < 0]
+    if len(downside_returns) == 0 or downside_returns.std() == 0:
+        return 0.0
+    excess_returns = returns - risk_free_rate / 252
+    return excess_returns.mean() / downside_returns.std() * np.sqrt(252)
+
+def calculate_max_drawdown(returns: pd.Series) -> float:
+    """Calculate maximum drawdown."""
+    wealth_index = (1 + returns).cumprod()
+    previous_peaks = wealth_index.expanding(min_periods=1).max()
+    drawdowns = (wealth_index - previous_peaks) / previous_peaks
+    return drawdowns.min()
+
+def calculate_annual_return(returns: pd.Series) -> float:
+    """Calculate annual return."""
+    total_return = (1 + returns).prod() - 1
+    years = len(returns) / 252  # Assuming 252 trading days per year
+    if years == 0:
+        return 0.0
+    return (1 + total_return) ** (1 / years) - 1
+
+def calculate_annual_volatility(returns: pd.Series) -> float:
+    """Calculate annual volatility."""
+    return returns.std() * np.sqrt(252)
+
 @dataclass
 class EvaluationMetrics:
     """Container for evaluation metrics."""
     timestamp: datetime
     model_name: str
     model_version: str
-    metrics: Dict[str, float]
-    resource_usage: Dict[str, float]
+    metrics: dict[str, float]
+    resource_usage: dict[str, float]
     predictions: Optional[pd.Series] = None
     
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return asdict(self)
     
     @classmethod
-    def from_dict(cls, data: Dict) -> 'EvaluationMetrics':
+    def from_dict(cls, data: dict) -> 'EvaluationMetrics':
         return cls(**data)
 
 class ModelEvaluator:
@@ -53,7 +91,7 @@ class ModelEvaluator:
         returns: pd.Series,
         predictions: pd.Series,
         risk_free_rate: float = 0.02
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Calculate trading-specific metrics."""
         # Convert predictions to position signals (-1, 0, 1)
         signals = np.sign(predictions)
@@ -61,15 +99,12 @@ class ModelEvaluator:
         
         try:
             metrics = {
-                'sharpe_ratio': ep.sharpe_ratio(strategy_returns, risk_free_rate),
-                'sortino_ratio': ep.sortino_ratio(strategy_returns, risk_free_rate),
-                'max_drawdown': ep.max_drawdown(strategy_returns),
-                'annual_return': ep.annual_return(strategy_returns),
-                'annual_volatility': ep.annual_volatility(strategy_returns),
-                'calmar_ratio': ep.calmar_ratio(strategy_returns),
-                'omega_ratio': ep.omega_ratio(strategy_returns),
-                'tail_ratio': ep.tail_ratio(strategy_returns),
-                'value_at_risk': strategy_returns.quantile(0.05)
+                'sharpe_ratio': calculate_sharpe_ratio(strategy_returns, risk_free_rate),
+                'sortino_ratio': calculate_sortino_ratio(strategy_returns, risk_free_rate),
+                'max_drawdown': calculate_max_drawdown(strategy_returns),
+                'annual_return': calculate_annual_return(strategy_returns),
+                'annual_volatility': calculate_annual_volatility(strategy_returns),
+                'value_at_risk': strategy_returns.quantile(0.05) if len(strategy_returns) > 0 else 0.0
             }
         except Exception as e:
             logger.error(f"Error calculating financial metrics: {str(e)}")
@@ -81,7 +116,7 @@ class ModelEvaluator:
         self,
         y_true: pd.Series,
         y_pred: pd.Series
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Calculate prediction accuracy metrics."""
         try:
             metrics = {
@@ -105,7 +140,7 @@ class ModelEvaluator:
         
         return metrics
     
-    def calculate_resource_metrics(self) -> Dict[str, float]:
+    def calculate_resource_metrics(self) -> dict[str, float]:
         """Calculate system resource usage metrics."""
         try:
             metrics = {
@@ -118,7 +153,7 @@ class ModelEvaluator:
             if torch.cuda.is_available():
                 metrics.update({
                     'gpu_memory_used': torch.cuda.memory_allocated() / (1024 ** 3),
-                    'gpu_utilization': torch.cuda.utilization()
+                    'gpu_memory_reserved': torch.cuda.memory_reserved() / (1024 ** 3)
                 })
                 
         except Exception as e:
@@ -183,7 +218,7 @@ class ModelEvaluator:
         self,
         current_metrics: EvaluationMetrics,
         baseline_name: str = 'simple_ma'
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Compare model performance to baseline."""
         if baseline_name not in self.baseline_metrics:
             logger.warning(f"Baseline {baseline_name} not found")
@@ -204,7 +239,7 @@ class ModelEvaluator:
         self,
         current_metrics: EvaluationMetrics,
         historical_window: int = 20
-    ) -> Dict[str, bool]:
+    ) -> dict[str, bool]:
         """Detect potential model drift using statistical tests."""
         drift_indicators = {}
         
@@ -237,7 +272,7 @@ class ModelEvaluator:
         self,
         model_name: str,
         window: int
-    ) -> List[EvaluationMetrics]:
+    ) -> list[EvaluationMetrics]:
         """Load historical evaluation results."""
         results = []
         try:

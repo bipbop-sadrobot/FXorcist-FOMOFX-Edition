@@ -26,7 +26,7 @@ class PredictionsVisualization(VisualizationComponent):
         self.show_confidence = True
         self.show_features = True
     
-    @cache_data(ttl_seconds=300)
+    @st.cache_data(ttl=timedelta(seconds=300))
     def _calculate_confidence_intervals(
         self,
         predictions: pd.Series,
@@ -39,7 +39,7 @@ class PredictionsVisualization(VisualizationComponent):
         upper_bound = predictions + z_score * std_dev
         return lower_bound, upper_bound
     
-    @cache_data(ttl_seconds=300)
+    @st.cache_data(ttl=timedelta(seconds=300))
     def _calculate_feature_importance(
         self,
         model: ModelHierarchy,

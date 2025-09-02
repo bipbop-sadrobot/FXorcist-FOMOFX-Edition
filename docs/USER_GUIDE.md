@@ -70,6 +70,43 @@ The system maintains an intelligent memory of market patterns and predictions:
 - Memory system performance
 - System resource usage
 
+4. QuantStats Tearsheet:
+- Comprehensive portfolio analysis
+- Interactive performance metrics
+- HTML report generation
+- Benchmark comparison
+
+#### Using the QuantStats Tearsheet
+
+The QuantStats Tearsheet provides detailed portfolio analysis and reporting:
+
+1. Interactive Dashboard:
+- Key performance metrics (returns, Sharpe ratio, drawdowns)
+- Risk analysis and metrics
+- Monthly performance heatmap
+- Rolling statistics
+- Distribution analysis
+- Detailed metrics table
+
+2. HTML Report Generation:
+- Click "Generate Full Report" in the sidebar
+- Compare against S&P 500 benchmark (optional)
+- Download HTML report for offline viewing
+- Complete analysis with charts and metrics
+
+3. Analysis Features:
+- Select analysis period (1M to 5Y)
+- Toggle benchmark comparison
+- Export data in JSON format
+- View detailed performance breakdowns
+
+4. Available Metrics:
+- Total and annual returns
+- Risk metrics (volatility, VaR, CVaR)
+- Ratios (Sharpe, Sortino, Calmar)
+- Drawdown analysis
+- Win rate and profit factors
+
 ## Troubleshooting
 
 ### Common Issues

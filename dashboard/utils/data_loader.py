@@ -15,6 +15,7 @@ import json
 
 from forex_ai_dashboard.pipeline.evaluation_metrics import EvaluationMetrics
 from forex_ai_dashboard.models.model_hierarchy import ModelHierarchy
+from forex_ai_dashboard.utils.caching import get_cache_manager, get_dataframe_cache, get_model_cache
 
 logger = logging.getLogger(__name__)
 

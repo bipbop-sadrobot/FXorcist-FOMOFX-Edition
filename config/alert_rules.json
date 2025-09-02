@@ -1,0 +1,43 @@
+[
+  {
+    "name": "EURUSD Price Alert",
+    "condition": "price_above",
+    "threshold": 1.1,
+    "symbol": "EURUSD",
+    "timeframe": "1H",
+    "enabled": true,
+    "notification_methods": [
+      "dashboard",
+      "email"
+    ],
+    "cooldown_minutes": 60,
+    "last_triggered": null
+  },
+  {
+    "name": "High Volatility Alert",
+    "condition": "volatility_spike",
+    "threshold": 0.02,
+    "symbol": "EURUSD",
+    "timeframe": "1H",
+    "enabled": true,
+    "notification_methods": [
+      "dashboard"
+    ],
+    "cooldown_minutes": 60,
+    "last_triggered": null
+  },
+  {
+    "name": "Model Performance Alert",
+    "condition": "model_performance",
+    "threshold": 0.85,
+    "symbol": null,
+    "timeframe": "1H",
+    "enabled": true,
+    "notification_methods": [
+      "dashboard",
+      "email"
+    ],
+    "cooldown_minutes": 60,
+    "last_triggered": null
+  }
+]
