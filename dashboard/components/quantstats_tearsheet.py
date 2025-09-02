@@ -251,7 +251,7 @@ class QuantStatsTearsheet(PerformanceComponent):
             st.info("No portfolio data available. Please ensure returns data is loaded.")
             return
 
-        # Report generation section in sidebar after data check
+        # Add HTML report generation to sidebar
         with st.sidebar:
             st.divider()
             st.subheader("HTML Report")
@@ -268,11 +268,6 @@ class QuantStatsTearsheet(PerformanceComponent):
                         file_name="quantstats_report.html",
                         mime="text/html"
                     )
-        data = self._cache.get('data')
-
-        if not data or 'returns' not in data:
-            st.info("No portfolio data available. Please ensure returns data is loaded.")
-            return
 
         # Generate tearsheet
         with st.spinner("Generating comprehensive QuantStats tearsheet..."):
