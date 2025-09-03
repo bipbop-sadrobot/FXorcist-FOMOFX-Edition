@@ -160,9 +160,15 @@ class AutomatedTrainingPipeline:
         return success_count > 0
 
     async def download_all_data(self) -> bool:
-        """Download comprehensive forex data."""
+        """Download comprehensive forex data or use existing data."""
         logger.info("Starting comprehensive data download")
 
+        # First try to use existing data
+        if self._check_existing_data():
+            logger.info("Using existing forex data files")
+            return True
+
+        # If no existing data, try downloading
         total_downloads = 0
         successful_downloads = 0
 
@@ -183,6 +189,68 @@ class AutomatedTrainingPipeline:
 
         logger.info(f"Data download complete: {successful_downloads}/{total_downloads} successful")
         return successful_downloads > 0
+
+    def _check_existing_data(self) -> bool:
+        """Check if existing forex data files are available and extract them."""
+        import zipfile
+        import shutil
+
+        existing_data_dir = Path("data/data/data/raw/temp_fx1min/output")
+        if not existing_data_dir.exists():
+            return False
+
+        logger.info("Checking for existing forex data files...")
+
+        # Check each currency pair directory
+        extracted_count = 0
+        for symbol_dir in existing_data_dir.iterdir():
+            if symbol_dir.is_dir() and symbol_dir.name.upper() in [s.upper() for s in self.symbols]:
+                symbol = symbol_dir.name.upper()
+                logger.info(f"Processing existing data for {symbol}")
+
+                # Create target directory
+                target_dir = self.data_dir / "raw" / "histdata" / symbol
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                # Process each ZIP file
+                for zip_file in symbol_dir.glob("*.zip"):
+                    try:
+                        # Extract year from filename (e.g., DAT_ASCII_AUDUSD_M1_2020.zip -> 2020)
+                        filename = zip_file.name
+                        if "_M1_" in filename:
+                            year_part = filename.split("_M1_")[1].split(".")[0]
+                            if len(year_part) == 4 and year_part.isdigit():  # Full year
+                                year = year_part
+                                month = None
+                            elif len(year_part) == 6 and year_part.isdigit():  # YearMonth
+                                year = year_part[:4]
+                                month = year_part[4:]
+                            else:
+                                continue
+
+                            # Extract the ZIP file
+                            with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+                                zip_ref.extractall(target_dir)
+
+                            # Find the extracted CSV and rename it
+                            for extracted_file in target_dir.glob("*.csv"):
+                                if month:
+                                    new_name = f"{month}.csv"
+                                else:
+                                    new_name = f"{year}.csv"
+                                extracted_file.rename(target_dir / year / new_name)
+                                extracted_count += 1
+                                break
+
+                    except Exception as e:
+                        logger.warning(f"Error processing {zip_file}: {str(e)}")
+
+        if extracted_count > 0:
+            logger.info(f"Successfully processed {extracted_count} existing data files")
+            return True
+        else:
+            logger.info("No existing data files found")
+            return False
 
     def _process_symbol_data(self, symbol: str) -> Optional[pd.DataFrame]:
         """Process data for a single symbol using parallel processing."""

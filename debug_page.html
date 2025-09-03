@@ -233,32 +233,32 @@ oneSignal_options['notifyButton']['text']['dialog.blocked.message'] = 'Follow th
 			<p>Here you have the data you selected. Enjoy!<br/>Please, validate the file status below to see if the data file has any problem inside.<br/>&nbsp;</p>
 			
 			<p><b>Application/Platform</b>: Generic .CSV File</p>
-			<p><b>Forex Pair</b>: GBP/JPY</p>
+			<p><b>Forex Pair</b>: EUR/USD</p>
 			<p><b>TimeFrame</b>: M1 (1 Minute Bar) Data</p>
-			<p><b>Year/Month</b>: 202412<br/>&nbsp;</p>
+			<p><b>Year/Month</b>: 202001<br/>&nbsp;</p>
 			
-			<p><b>Download Historical Data Here</b>: <a id="a_file" title="Download the zip data file" href="javascript:return true;" target="nullDisplay">HISTDATA_COM_ASCII_GBPJPY_M1_202412.zip</a><br/>&nbsp;</p>
+			<p><b>Download Historical Data Here</b>: <a id="a_file" title="Download the zip data file" href="javascript:return true;" target="nullDisplay">HISTDATA_COM_ASCII_EURUSD_M1_202001.zip</a><br/>&nbsp;</p>
 			
-			<p>File Status Report: <a id="a_status" title="Download the status file" href="javascript:return true;" target="nullDisplay">HISTDATA_COM_ASCII_GBPJPY_M1_202412.txt</a> </p>
+			<p>File Status Report: <a id="a_status" title="Download the status file" href="javascript:return true;" target="nullDisplay">HISTDATA_COM_ASCII_EURUSD_M1_202001.txt</a> </p>
 
 <div style="display:none;">
 
 	<form id="file_down" name="file_down" target="nullDisplay" method="POST" action="/get.php">
-		<input type="hidden" name="tk" id="tk" value="6cbfc5bc4079894ec8421a466df8aeb3" />
-		<input type="hidden" name="date" id="date" value="2024" />
-	       <input type="hidden" name="datemonth" id="datemonth" value="202412" />
+		<input type="hidden" name="tk" id="tk" value="258ed1b6f5901ab766138171ef4ea117" />
+		<input type="hidden" name="date" id="date" value="2020" />
+	       <input type="hidden" name="datemonth" id="datemonth" value="202001" />
 		<input type="hidden" name="platform" id="platform" value="ASCII" />
 		<input type="hidden" name="timeframe" id="timeframe" value="M1" />
-		<input type="hidden" name="fxpair" id="fxpair" value="GBPJPY" />
+		<input type="hidden" name="fxpair" id="fxpair" value="EURUSD" />
 	</form>
 
 	<form id="file_status" name="file_status" target="nullDisplay" method="POST" action="/getStatus.php">
-		<input type="hidden" name="tk" id="tk" value="6cbfc5bc4079894ec8421a466df8aeb3" />
-		<input type="hidden" name="date" id="date" value="2024" />
-	       <input type="hidden" name="datemonth" id="datemonth" value="202412" />
+		<input type="hidden" name="tk" id="tk" value="258ed1b6f5901ab766138171ef4ea117" />
+		<input type="hidden" name="date" id="date" value="2020" />
+	       <input type="hidden" name="datemonth" id="datemonth" value="202001" />
 		<input type="hidden" name="platform" id="platform" value="ASCII" />
 		<input type="hidden" name="timeframe" id="timeframe" value="M1" />
-		<input type="hidden" name="fxpair" id="fxpair" value="GBPJPY" />
+		<input type="hidden" name="fxpair" id="fxpair" value="EURUSD" />
 	</form>
 
 	<iframe id="nullDisplay" name="nullDisplay" ></iframe>

@@ -1,0 +1,24 @@
+# Training data and models
+data/
+models/
+logs/
+cache/
+catboost_info/
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+venv310/
+dashboard/cache/
+dashboard/logs/
+*.zip
+*.db
+*.db-shm
+*.db-wal
+cookies.txt
+debug_page.html
+analysis_results.csv
+number_analysis.log
+full_training_5min.log
+demo_output.log
+test_output.log

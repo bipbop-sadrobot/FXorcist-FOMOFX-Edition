@@ -10,6 +10,10 @@ import plotly.express as px
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+import numpy as np
+from scipy import stats
+import psutil
+import torch
 
 from . import PerformanceComponent, ComponentConfig
 
@@ -56,6 +60,15 @@ class TrainingMonitor(PerformanceComponent):
                 'chart_type': 'Line',
                 'color_scheme': 'Default'
             }
+        # Initialize metrics attribute (similar to AutomatedTrainingPipeline)
+        self.metrics = {
+            'feature_importance_history': [],
+            'feature_stability_score': 0,
+            'feature_correlation_matrix': None,
+            'cross_validation_scores': [],
+            'out_of_sample_performance': {},
+            'model_robustness_score': 0
+        }
 
     def _get_system_metrics(self) -> Dict[str, int]:
         """Get current system metrics."""
@@ -279,7 +292,7 @@ class TrainingMonitor(PerformanceComponent):
                     st.metric("GPU Utilization", f"{gpu_utilization}%")
             
             # Historical metrics visualization
-            if show_history:
+            if st.session_state.viz_preferences['show_history']:
                 self._render_metrics_history(chart_type)
         
         with metric_tabs[1]:  # Data Synthesis
