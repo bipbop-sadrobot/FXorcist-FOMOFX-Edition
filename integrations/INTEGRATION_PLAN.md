@@ -1,182 +1,147 @@
-# FXorcist Integration Plan: Decomposition Tests, EconML, Classification Templates
+# FXorcist Integration Plan
 
-## Goals
-1. Add robustness testing via decomposed likelihood-ratio approximations
-2. Add causal inference capability to estimate the effect of events/signals on returns
-3. Improve signal classification by adding an ensemble model zoo
+## Overview
 
-## Components Overview
+This document outlines the integration plan for enhancing FXorcist with advanced analytics, backtesting, and ML capabilities through the following components:
 
-### 1. Decomposition Tests
-- Purpose: Validate models under noisy, low-signal conditions
-- Implementation: `fxorcist_integration/tests/decomposed_tests.py`
-- Key Features:
-  - Component-wise classifiers for better likelihood ratio estimates
-  - Robust performance under high market noise
-  - Support for rare-event scenarios
+1. QuantStats - Rich analytics & reporting
+2. VectorBT - Fast backtesting & parameter sweeps
+3. Alphalens - Signal/factor analysis
+4. MlFinLab - Advanced labeling & CV
+5. EconML - Causal analysis & effects
+6. Model Zoo - Improved model selection & evaluation
 
-### 2. Causal Inference (EconML)
-- Purpose: Estimate heterogeneous treatment effects from market events
-- Implementation: `fxorcist_integration/causal/econml_effects.py`
-- Key Features:
-  - Treatment effect estimation for economic events
-  - Orthogonal machine learning models
-  - Confidence intervals for causal impacts
+## Integration Components
 
-### 3. Enhanced Classification
-- Purpose: Improve prediction accuracy through ensemble methods
-- Implementation: `fxorcist_integration/models/model_zoo.py`
-- Key Features:
-  - Random Forests for reduced overfitting
-  - Support for multiple classifier types
-  - Automated model selection
+### A. Fast Backtesting (VectorBT)
+- Implement parameter sweeps for strategy optimization
+- Accelerate backtesting with Numba-powered calculations
+- Generate performance metrics and analysis reports
 
-## Integration with Existing Components
+### B. Rich Analytics & Reporting
+1. QuantStats
+   - Generate HTML tear-sheets for strategy analysis
+   - Track rolling metrics and drawdowns
+   - Create monthly performance heatmaps
 
-### Vector Adapters & Embedding Hooks
-- Feed feature vectors to new models
-- Convert indicator vectors to feature matrices
-- Support for both technical and embedded features
+2. Alphalens
+   - Analyze signal predictive power (IC)
+   - Study signal decay patterns
+   - Evaluate factor effectiveness
 
-### Consolidation Worker
-- Run decomposed tests on model outputs
-- Execute validation steps using MLP classifiers
-- Process streaming data through causal models
+### C. Production ML & Causal Analysis
+1. EconML
+   - Estimate causal effects of trading signals
+   - Implement trade gating based on causal insights
+   - Monitor and update effect estimates
 
-### Kafka Eventbus
-- Transport market events to/from new modules
-- Stream causal effect estimates
-- Distribute model predictions
+2. MlFinLab
+   - Triple-barrier labeling for better signal quality
+   - Purged cross-validation to reduce leakage
+   - Advanced feature engineering techniques
 
-### Federated DP Aggregator
-- Support for federated causal modeling
-- Private data stream handling
-- Aggregated treatment effect computation
+3. Model Zoo
+   - Automated model evaluation and selection
+   - Robust performance metrics under various conditions
+   - Version control for model artifacts
 
-## Implementation Steps
+## Implementation Timeline
 
-1. Setup & Dependencies
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r integrations/requirements.txt
-   ```
+### Phase 1: Foundation (0-3 days)
+- Set up directory structure
+- Install dependencies
+- Validate basic CLI functionality
+- Create example datasets
 
-2. Core Components Installation
-   - Deploy decomposition test modules
-   - Install EconML components
-   - Set up classification templates
+### Phase 2: Core Integration (1-2 weeks)
+- Wire QuantStats into consolidation worker
+- Implement triple-barrier labeling
+- Set up VectorBT parameter sweeps
+- Configure Alphalens analysis pipeline
 
-3. Integration Testing
-   - Validate with historical data
-   - Test streaming capabilities
-   - Verify DP aggregation
+### Phase 3: Advanced Features (2-6 weeks)
+- Deploy causal analysis service
+- Build Streamlit dashboard
+- Implement automated retraining
+- Set up monitoring and alerts
 
-4. Production Deployment
-   - Docker container setup
-   - Kafka topic configuration
-   - Monitoring implementation
+### Phase 4: Production Hardening (>6 weeks)
+- Scale compute resources as needed
+- Add comprehensive testing
+- Implement drift detection
+- Document production deployment
 
-## Expected Improvements
+## Integration Points
 
-1. Model Robustness
-   - Better performance in noisy conditions
-   - Improved rare event handling
-   - Reduced false signals
+### Event Pipeline Integration
+1. Consolidation Worker
+   - Generate QuantStats reports post-backtest
+   - Run Alphalens analysis on predictions
+   - Execute decomposition tests
+   - Update model artifacts
 
-2. Causal Understanding
-   - Quantified event impacts
-   - Better risk assessment
-   - More informed trading decisions
+2. Model Training
+   - Use MlFinLab for robust labeling
+   - Implement purged CV
+   - Auto-evaluate model candidates
 
-3. Classification Accuracy
-   - Reduced overfitting
-   - More reliable signals
-   - Better adaptation to market conditions
+3. Real-time Processing
+   - Update causal effects estimates
+   - Apply trade gating rules
+   - Monitor performance metrics
 
-## Next Steps
+## Expected Outcomes
 
-1. Short Term (1-2 weeks)
-   - Complete initial component setup
-   - Run basic validation tests
-   - Document API interfaces
+1. Signal Robustness
+   - Reduced performance degradation under noise
+   - Better stability across market conditions
+   - Improved execution quality
 
-2. Medium Term (2-4 weeks)
-   - Integrate with live data streams
-   - Implement monitoring
-   - Optimize performance
+2. Model Performance
+   - Higher out-of-sample accuracy
+   - Reduced look-ahead bias
+   - More reliable predictions
 
-3. Long Term (1-2 months)
-   - Scale deployment
-   - Add advanced features
-   - Enhance documentation
+3. Operational Improvements
+   - Faster parameter optimization
+   - Better visualization of results
+   - More efficient human review process
+
+4. Risk Management
+   - Causal-aware trade filtering
+   - Lower drawdowns
+   - Improved risk-adjusted returns
+
+## Technical Notes & Caveats
+
+1. Installation Requirements
+   - EconML may need additional system dependencies
+   - VectorBT works best with Conda on macOS
+   - MlFinLab has some premium features (using open-source subset)
+
+2. Performance Considerations
+   - VectorBT sweeps may need significant CPU
+   - Consider containerization for heavy computation
+   - Monitor memory usage during parallel operations
+
+3. Market Considerations
+   - Account for regime changes in Forex
+   - Use rolling windows for retraining
+   - Validate causal assumptions carefully
 
 ## Monitoring & Maintenance
 
-1. Performance Metrics
-   - Classification accuracy
-   - Treatment effect stability
-   - System resource usage
+1. Regular Tasks
+   - Schedule model retraining
+   - Update causal effect estimates
+   - Generate performance reports
 
-2. Regular Updates
-   - Weekly model retraining
-   - Monthly performance review
-   - Quarterly system audit
+2. Alert Conditions
+   - Model drift detection
+   - Performance degradation
+   - System resource utilization
 
 3. Documentation
-   - API documentation
-   - Usage examples
-   - Troubleshooting guides
-
-## Risk Management
-
-1. Technical Risks
-   - Data quality issues
-   - System performance
-   - Integration conflicts
-
-2. Mitigation Strategies
-   - Comprehensive testing
-   - Gradual deployment
-   - Regular backups
-
-3. Contingency Plans
-   - Rollback procedures
-   - Alternative implementations
-   - Support protocols
-
-## Success Criteria
-
-1. Quantitative Metrics
-   - Improved prediction accuracy
-   - Reduced false positives
-   - Better risk-adjusted returns
-
-2. Qualitative Outcomes
-   - More stable performance
-   - Better interpretability
-   - Easier maintenance
-
-3. System Health
-   - Reduced latency
-   - Better resource utilization
-   - Improved reliability
-
-## Resources & References
-
-1. Key Documentation
-   - EconML documentation
-   - DecomposingTests paper
-   - Classification templates
-
-2. Support Tools
-   - Monitoring dashboards
-   - Testing frameworks
-   - Development tools
-
-3. Team Resources
-   - Training materials
-   - Code reviews
-   - Knowledge base
-
-This integration plan provides a structured approach to enhancing FXorcist with advanced ML capabilities while maintaining system stability and performance.
+   - Maintain integration guides
+   - Update troubleshooting docs
+   - Track version changes
