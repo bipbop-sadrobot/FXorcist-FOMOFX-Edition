@@ -1,24 +1,32 @@
-# Training data and models
-data/
-models/
-logs/
-cache/
-catboost_info/
+# Virtual environments
+venv*/
+venv310/
+
+# Python caches and bytecode
 __pycache__/
 *.pyc
-*.log
+*.pyo
+*.pyd
+*.so
+
+# macOS files
 .DS_Store
-venv310/
-dashboard/cache/
-dashboard/logs/
-*.zip
-*.db
-*.db-shm
-*.db-wal
+
+# Build artifacts
+*.egg-info/
+build/
+dist/
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
 cookies.txt
-debug_page.html
-analysis_results.csv
-number_analysis.log
-full_training_5min.log
-demo_output.log
-test_output.log
+
+# Visualizations and outputs (if regeneratable)
+visualizations/*
+
+# Other ignores (add if relevant)
+*.zip
+*.csv  # If any lingering data
+*.h5
