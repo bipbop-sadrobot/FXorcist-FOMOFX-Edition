@@ -26,7 +26,9 @@ cookies.txt
 # Visualizations (optional, if regeneratable)
 visualizations/*.png
 
-# Other potential ignores
+# CSV files (to exclude analysis_results.csv and others)
+*.csv
+
+# Other
 .kilocode/
-=0.10.2  # Looks like a stray file; ignore if temporary
-*.csv  # If you don’t want analysis_results.csv
+=0.10.2
