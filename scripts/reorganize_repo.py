@@ -57,13 +57,55 @@ class RepoOrganizer:
         self.import_graph: Dict[str, Set[str]] = {}
         self.phase = 'analysis'  # Current phase of reorganization
 
+    def analyze_imports(self, file: Path) -> Optional[Dict[str, List[str]]]:
+        """
+        Analyze imports in a Python file.
+        Returns dict of {module: [imported_names]} or None if not a Python file.
+        """
+        if not file.name.endswith('.py'):
+            return None
+            
+        try:
+            analyzer = ImportAnalyzer()
+            tree = ast.parse(file.read_text())
+            analyzer.visit(tree)
+            return {
+                'imports': list(analyzer.imports),
+                'from_imports': analyzer.from_imports
+            }
+        except Exception as e:
+            logger.warning(f"Failed to analyze imports in {file}: {e}")
+            return None
+
+    def build_dependency_graph(self) -> None:
+        """Build graph of file dependencies based on imports."""
+        logger.info("Building dependency graph...")
+        
+        for file in self.root.rglob('*.py'):
+            if file.is_file():
+                rel_path = str(file.relative_to(self.root))
+                self.import_graph[rel_path] = set()
+                
+                imports = self.analyze_imports(file)
+                if imports:
+                    # Find files that provide these imports
+                    for module in imports['imports'] + list(imports['from_imports'].keys()):
+                        # Look for matching files
+                        potential_matches = list(self.root.rglob(f"{module}.py"))
+                        if potential_matches:
+                            for match in potential_matches:
+                                self.import_graph[rel_path].add(
+                                    str(match.relative_to(self.root))
+                                )
+
     def create_package_structure(self) -> None:
         """Create the main package directories."""
+        logger.info("Creating package structure...")
         for pkg in self.packages:
             pkg_dir = self.root / pkg
             pkg_dir.mkdir(exist_ok=True)
             (pkg_dir / '__init__.py').touch()
-            print(f"Created package directory: {pkg}")
+            logger.info(f"Created package directory: {pkg}")
 
     def is_duplicate_training_file(self, file: Path) -> bool:
         """Check if a file is a duplicate training pipeline."""
@@ -76,7 +118,10 @@ class RepoOrganizer:
             r'.*comprehensive.*training.*\.py$'
         ]
         
-        return any(re.match(pattern, file.name) for pattern in training_patterns)
+        is_duplicate = any(re.match(pattern, file.name) for pattern in training_patterns)
+        if is_duplicate:
+            logger.debug(f"Identified duplicate training file: {file}")
+        return is_duplicate
 
     def determine_package(self, file: Path) -> str:
         """Determine which package a file belongs to."""
