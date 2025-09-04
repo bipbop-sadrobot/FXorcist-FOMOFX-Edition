@@ -2,13 +2,43 @@
 """
 Repository reorganization script for FXorcist-FOMOFX-Edition.
 Organizes files into logical packages and removes redundancy.
+Includes safe handling of imports and dependencies.
 """
 
 import os
 import shutil
+import logging
+import ast
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 import re
+from datetime import datetime
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(f"reorganize_{datetime.now():%Y%m%d_%H%M%S}.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class ImportAnalyzer(ast.NodeVisitor):
+    """Analyzes Python file imports."""
+    
+    def __init__(self):
+        self.imports = set()
+        self.from_imports = {}
+        
+    def visit_Import(self, node):
+        for name in node.names:
+            self.imports.add(name.name.split('.')[0])
+            
+    def visit_ImportFrom(self, node):
+        if node.module:
+            self.from_imports[node.module.split('.')[0]] = [n.name for n in node.names]
 
 class RepoOrganizer:
     """Handles repository reorganization and cleanup."""
@@ -24,6 +54,8 @@ class RepoOrganizer:
         }
         self.moved_files: Dict[str, str] = {}
         self.deleted_files: Set[str] = set()
+        self.import_graph: Dict[str, Set[str]] = {}
+        self.phase = 'analysis'  # Current phase of reorganization
 
     def create_package_structure(self) -> None:
         """Create the main package directories."""
