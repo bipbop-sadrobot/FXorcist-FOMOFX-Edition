@@ -1,34 +1,32 @@
-# Virtual environments
+*.csv
+*.zip
+data/
+models/
+catboost_info/
+logs/
+cache/
+dashboard/cache/
+memory_system_starter.zip
+tracked_files.txt
+post_cleanup_tracked_files.txt
+git_sizer_report.txt
+file_sizes.txt
+final_tracked_files.txt
 venv*/
 venv310/
-
-# Python cache and compiled files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.so
-
-# Mac-specific files
 .DS_Store
-
-# Build artifacts
 *.egg-info/
 build/
 dist/
-
-# Logs and temporary files
 *.log
 cookies.txt
 *.tmp
 *.bak
-
-# Visualizations (optional, if regeneratable)
 visualizations/*.png
-
-# CSV files (to exclude analysis_results.csv and others)
-*.csv
-
-# Other
 .kilocode/
 =0.10.2
