@@ -2,14 +2,14 @@
 venv*/
 venv310/
 
-# Python caches and bytecode
+# Python cache and compiled files
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.so
 
-# macOS files
+# Mac-specific files
 .DS_Store
 
 # Build artifacts
@@ -17,16 +17,16 @@ __pycache__/
 build/
 dist/
 
-# Logs and temp files
+# Logs and temporary files
 *.log
+cookies.txt
 *.tmp
 *.bak
-cookies.txt
 
-# Visualizations and outputs (if regeneratable)
-visualizations/*
+# Visualizations (optional, if regeneratable)
+visualizations/*.png
 
-# Other ignores (add if relevant)
-*.zip
-*.csv  # If any lingering data
-*.h5
+# Other potential ignores
+.kilocode/
+=0.10.2  # Looks like a stray file; ignore if temporary
+*.csv  # If you don’t want analysis_results.csv
