@@ -166,38 +166,153 @@ class RepoOrganizer:
         normalized = re.sub(r'_+', '_', normalized)
         return normalized
 
-    def organize_files(self) -> None:
-        """Organize files into appropriate packages."""
-        print("Starting file organization...")
+    def update_imports(self, file: Path, moved_files: Dict[str, str]) -> None:
+        """Update imports in a file after moving dependencies."""
+        if not file.name.endswith('.py'):
+            return
+
+        try:
+            content = file.read_text()
+            tree = ast.parse(content)
+            
+            class ImportUpdater(ast.NodeTransformer):
+                def __init__(self, moved_files):
+                    self.moved_files = moved_files
+                    self.changes = False
+                    
+                def visit_Import(self, node):
+                    for name in node.names:
+                        old_name = name.name.split('.')[0]
+                        if f"{old_name}.py" in self.moved_files:
+                            new_path = Path(self.moved_files[f"{old_name}.py"])
+                            new_module = new_path.parent.name + '.' + new_path.stem
+                            name.name = new_module
+                            self.changes = True
+                    return node
+                    
+                def visit_ImportFrom(self, node):
+                    if node.module and f"{node.module.split('.')[0]}.py" in self.moved_files:
+                        new_path = Path(self.moved_files[f"{node.module.split('.')[0]}.py"])
+                        node.module = new_path.parent.name + '.' + new_path.stem
+                        self.changes = True
+                    return node
+            
+            updater = ImportUpdater(moved_files)
+            new_tree = updater.visit(tree)
+            
+            if updater.changes:
+                file.write_text(ast.unparse(new_tree))
+                logger.info(f"Updated imports in {file}")
+                
+        except Exception as e:
+            logger.warning(f"Failed to update imports in {file}: {e}")
+
+    def organize_files_safely(self) -> None:
+        """Organize files with import updates."""
+        logger.info("Starting safe file organization...")
         
-        # First pass: Identify and mark files for moving/deletion
+        # Analysis phase
+        self.phase = 'analysis'
+        self.build_dependency_graph()
+        
+        # Planning phase
+        self.phase = 'planning'
+        moves_by_package = {}
+        for pkg in self.packages:
+            moves_by_package[pkg] = []
+            
         for file in self.root.rglob('*'):
             if file.is_file() and not any(p in str(file) for p in self.packages.keys()):
                 if self.should_delete_file(file):
                     self.deleted_files.add(str(file))
                     continue
-
+                    
                 pkg = self.determine_package(file)
                 if pkg:
                     normalized_name = self.normalize_filename(file.name)
                     new_path = self.root / pkg / normalized_name
-                    self.moved_files[str(file)] = str(new_path)
-
-        # Second pass: Move files
-        for old_path, new_path in self.moved_files.items():
-            old_path = Path(old_path)
-            new_path = Path(new_path)
+                    moves_by_package[pkg].append((file, new_path))
+        
+        # Execution phase
+        self.phase = 'execution'
+        
+        # Move files package by package
+        for pkg, moves in moves_by_package.items():
+            logger.info(f"Processing package: {pkg}")
             
-            if old_path.exists():
-                new_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(old_path), str(new_path))
-                print(f"Moved: {old_path} -> {new_path}")
-
-        # Third pass: Delete marked files
+            # Create package directory
+            pkg_dir = self.root / pkg
+            pkg_dir.mkdir(exist_ok=True)
+            (pkg_dir / '__init__.py').touch()
+            
+            # Move files
+            for old_path, new_path in moves:
+                if old_path.exists():
+                    try:
+                        # Create parent directories
+                        new_path.parent.mkdir(parents=True, exist_ok=True)
+                        
+                        # Move file
+                        shutil.move(str(old_path), str(new_path))
+                        self.moved_files[str(old_path)] = str(new_path)
+                        logger.info(f"Moved: {old_path} -> {new_path}")
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to move {old_path}: {e}")
+            
+            # Update imports in moved files
+            for _, new_path in moves:
+                if new_path.exists():
+                    self.update_imports(new_path, self.moved_files)
+        
+        # Delete marked files
         for file in self.deleted_files:
             if Path(file).exists():
-                os.remove(file)
-                print(f"Deleted: {file}")
+                try:
+                    os.remove(file)
+                    logger.info(f"Deleted: {file}")
+                except Exception as e:
+                    logger.error(f"Failed to delete {file}: {e}")
+
+    def validate_reorganization(self) -> bool:
+        """
+        Validate the reorganization results.
+        Returns True if validation passes.
+        """
+        logger.info("Validating reorganization...")
+        
+        success = True
+        
+        # Check all files were moved correctly
+        for old_path, new_path in self.moved_files.items():
+            if Path(old_path).exists():
+                logger.error(f"Source file still exists: {old_path}")
+                success = False
+            if not Path(new_path).exists():
+                logger.error(f"Destination file missing: {new_path}")
+                success = False
+        
+        # Check all packages have __init__.py
+        for pkg in self.packages:
+            init_file = self.root / pkg / "__init__.py"
+            if not init_file.exists():
+                logger.error(f"Missing __init__.py in {pkg}")
+                success = False
+        
+        # Check for circular imports
+        for file in self.root.rglob("*.py"):
+            try:
+                ast.parse(file.read_text())
+            except SyntaxError as e:
+                logger.error(f"Syntax error in {file}: {e}")
+                success = False
+        
+        if success:
+            logger.info("Validation passed!")
+        else:
+            logger.error("Validation failed!")
+            
+        return success
 
     def consolidate_training_pipelines(self) -> None:
         """Consolidate multiple training pipeline files into a unified structure."""
