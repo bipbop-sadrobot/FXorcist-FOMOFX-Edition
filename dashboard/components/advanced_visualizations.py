@@ -285,7 +285,7 @@ class CorrelationHeatmap:
                                        window: int = 30) -> go.Figure:
         """Create rolling correlation chart."""
         # Calculate rolling correlation
-        rolling_corr = data[feature1].rolling(window=window).corr(data[feature2])
+        rolling_corr = data[feature1].rolling(window=window, min_periods=1).corr(data[feature2])
 
         fig = go.Figure()
 
@@ -450,9 +450,9 @@ class PerformanceVisualizer:
                                weights: Dict[str, float] = None) -> go.Figure:
         """Create risk parity visualization."""
         # Calculate risk metrics
-        volatility = returns.rolling(30).std() * np.sqrt(252)
-        var_95 = returns.rolling(30).quantile(0.05)
-        cvar_95 = returns[returns <= var_95].rolling(30).mean()
+        volatility = returns.rolling(30, min_periods=1).std() * np.sqrt(252)
+        var_95 = returns.rolling(30, min_periods=1).quantile(0.05)
+        cvar_95 = returns[returns <= var_95].rolling(30, min_periods=1).mean()
 
         fig = make_subplots(
             rows=2, cols=2,
@@ -652,7 +652,7 @@ class AdvancedVisualizationComponent:
         predictions = predictions.dropna()
 
         # Generate confidence intervals
-        std_dev = data['close'].rolling(20).std()
+        std_dev = data['close'].rolling(20, min_periods=1).std()
         lower_bound = predictions * (1 - 2 * std_dev / data['close'])
         upper_bound = predictions * (1 + 2 * std_dev / data['close'])
 
@@ -778,7 +778,7 @@ class AdvancedVisualizationComponent:
             returns = data['close'].pct_change().dropna()
 
             # Create benchmark (simple moving average strategy)
-            benchmark_returns = (data['close'] > data['close'].rolling(20).mean()).shift(1) * returns
+            benchmark_returns = (data['close'] > data['close'].rolling(20, min_periods=1).mean()).shift(1) * returns
             benchmark_returns = benchmark_returns.fillna(0)
 
             fig = self.performance_visualizer.create_performance_attribution_chart(

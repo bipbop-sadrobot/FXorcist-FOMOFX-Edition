@@ -16,6 +16,7 @@ import psutil
 import torch
 
 from . import PerformanceComponent, ComponentConfig
+from utils.enhanced_data_loader import EnhancedDataLoader
 
 class TrainingMonitor(PerformanceComponent):
     """Component for monitoring and visualizing the training system."""
@@ -69,6 +70,9 @@ class TrainingMonitor(PerformanceComponent):
             'out_of_sample_performance': {},
             'model_robustness_score': 0
         }
+
+        # Initialize data loader for synthetic data generation
+        self.data_loader = EnhancedDataLoader()
 
     def _get_system_metrics(self) -> Dict[str, int]:
         """Get current system metrics."""
@@ -1202,8 +1206,8 @@ class TrainingMonitor(PerformanceComponent):
 
         # Basic performance metrics
         metrics['cumulative_returns'] = (1 + returns).cumprod() - 1
-        metrics['rolling_sharpe'] = returns.rolling(window=30).mean() / returns.rolling(window=30).std() * np.sqrt(252)
-        metrics['rolling_volatility'] = returns.rolling(window=30).std() * np.sqrt(252)
+        metrics['rolling_sharpe'] = returns.rolling(window=30, min_periods=1).mean() / returns.rolling(window=30, min_periods=1).std() * np.sqrt(252)
+        metrics['rolling_volatility'] = returns.rolling(window=30, min_periods=1).std() * np.sqrt(252)
 
         return metrics
 

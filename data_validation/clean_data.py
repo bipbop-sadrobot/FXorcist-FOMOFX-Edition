@@ -59,8 +59,8 @@ def hampel_filter(series: pd.Series, window: int = 10, threshold: float = 3) -> 
     Apply Hampel filter for outlier detection and replacement.
     Uses median absolute deviation (MAD) for robust statistics.
     """
-    rolling_median = series.rolling(window=window, center=True).median()
-    rolling_mad = mad(series.rolling(window=window, center=True))
+    rolling_median = series.rolling(window=window, center=True, min_periods=1).median()
+    rolling_mad = mad(series.rolling(window=window, center=True, min_periods=1))
     diff = np.abs(series - rolling_median)
     outliers = diff > (threshold * rolling_mad)
     return pd.Series(np.where(outliers, rolling_median, series), index=series.index)
@@ -123,8 +123,8 @@ def adaptive_clean_forex_data(
                 )
             
             if 'rolling_zscore' in methods:
-                rolling_mean = cleaned_df[col].rolling(window=window_size).mean()
-                rolling_std = cleaned_df[col].rolling(window=window_size).std()
+                rolling_mean = cleaned_df[col].rolling(window=window_size, min_periods=1).mean()
+                rolling_std = cleaned_df[col].rolling(window=window_size, min_periods=1).std()
                 z_scores = np.abs((cleaned_df[col] - rolling_mean) / rolling_std)
                 outliers = z_scores > thresholds.thresholds['zscore']
                 cleaned_df.loc[outliers, col] = rolling_mean[outliers]

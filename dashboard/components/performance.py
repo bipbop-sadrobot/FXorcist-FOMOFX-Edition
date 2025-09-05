@@ -57,10 +57,10 @@ class PerformanceMetrics(PerformanceComponent):
         metrics['cumulative_pnl'] = (1 + returns).cumprod() - 1
         
         # Calculate additional risk metrics
-        metrics['rolling_var'] = returns.rolling(window).quantile(0.05)
+        metrics['rolling_var'] = returns.rolling(window, min_periods=1).quantile(0.05)
         metrics['rolling_sortino'] = (
-            returns.rolling(window).mean() / 
-            returns[returns < 0].rolling(window).std() * 
+            returns.rolling(window, min_periods=1).mean() /
+            returns[returns < 0].rolling(window, min_periods=1).std() *
             np.sqrt(252)
         )
         

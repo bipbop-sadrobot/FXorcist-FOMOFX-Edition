@@ -21,7 +21,7 @@ class MarketRegime:
     
     def identify(self, returns: pd.Series) -> pd.Series:
         """Identify periods belonging to this regime."""
-        vol = returns.rolling(20).std()
+        vol = returns.rolling(20, min_periods=1).std()
         in_regime = (vol >= self.volatility_range[0]) & (vol < self.volatility_range[1])
         return in_regime
 

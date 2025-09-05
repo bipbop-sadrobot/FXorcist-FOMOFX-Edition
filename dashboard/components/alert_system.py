@@ -75,7 +75,7 @@ class AlertRule:
                     }
 
             elif self.condition == "volatility_spike":
-                volatility = data['returns'].rolling(20).std().iloc[-1]
+                volatility = data['returns'].rolling(20, min_periods=1).std().iloc[-1]
                 if volatility > self.threshold:
                     return {
                         'type': 'volatility_alert',

@@ -33,7 +33,7 @@ class ForexDataCleaner:
         # Calculate price volatility as a proxy for volume
         if 'close' in df.columns:
             returns = df['close'].pct_change().fillna(0)
-            volatility = returns.rolling(20).std().fillna(returns.std())
+            volatility = returns.rolling(20, min_periods=1).std().fillna(returns.std())
 
             # Generate volume based on volatility and price movement
             # Higher volatility = higher volume

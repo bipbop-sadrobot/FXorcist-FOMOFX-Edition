@@ -14,13 +14,19 @@ import json
 import optuna
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
-import mlflow
-import mlflow.optuna
 
 # Import model classes
 from forex_ai_dashboard.models.catboost_model import CatBoostModel
 
 logger = logging.getLogger(__name__)
+
+try:
+    import mlflow
+    import mlflow.optuna
+    MLFLOW_AVAILABLE = True
+except ImportError:
+    MLFLOW_AVAILABLE = False
+    logger.warning("MLflow not available. Experiment tracking will be disabled.")
 
 class HyperparameterOptimizer:
     """Advanced hyperparameter optimization using Optuna."""
@@ -57,8 +63,9 @@ class HyperparameterOptimizer:
             load_if_exists=True
         )
 
-        # Setup MLflow integration
-        mlflow.set_experiment(f"optuna_{study_name}")
+        # Setup MLflow integration (if available)
+        if MLFLOW_AVAILABLE:
+            mlflow.set_experiment(f"optuna_{study_name}")
 
     def optimize_catboost(self,
                          X_train: pd.DataFrame,
@@ -88,12 +95,8 @@ class HyperparameterOptimizer:
                 'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
                 'depth': trial.suggest_int('depth', 4, 10),
                 'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1.0, 10.0),
-                'random_strength': trial.suggest_float('random_strength', 0.1, 10.0),
-                'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 1.0),
-                'border_count': trial.suggest_int('border_count', 32, 255),
                 'loss_function': 'RMSE',
                 'random_seed': 42,
-                'verbose': False,
                 'early_stopping_rounds': 50
             }
 
@@ -107,13 +110,15 @@ class HyperparameterOptimizer:
 
             # Evaluate
             y_pred = model.predict(X_test)
-            r2_score = model.evaluate(y_test, y_pred)['r2']
+            from sklearn.metrics import r2_score
+            r2_score = r2_score(y_test, y_pred)
 
-            # Log to MLflow
-            with mlflow.start_run():
-                mlflow.log_params(params)
-                mlflow.log_metric("r2_score", r2_score)
-                mlflow.log_metric("trial_number", trial.number)
+            # Log to MLflow (if available)
+            if MLFLOW_AVAILABLE:
+                with mlflow.start_run():
+                    mlflow.log_params(params)
+                    mlflow.log_metric("r2_score", r2_score)
+                    mlflow.log_metric("trial_number", trial.number)
 
             return r2_score
 
@@ -193,10 +198,11 @@ class HyperparameterOptimizer:
                 y_pred = model.predict(X_test)
                 r2_score = r2_score(y_test, y_pred)
 
-                # Log to MLflow
-                with mlflow.start_run():
-                    mlflow.log_params(params)
-                    mlflow.log_metric("r2_score", r2_score)
+                # Log to MLflow (if available)
+                if MLFLOW_AVAILABLE:
+                    with mlflow.start_run():
+                        mlflow.log_params(params)
+                        mlflow.log_metric("r2_score", r2_score)
 
                 return r2_score
 
@@ -258,10 +264,11 @@ class HyperparameterOptimizer:
                 y_pred = model.predict(X_test)
                 r2_score = r2_score(y_test, y_pred)
 
-                # Log to MLflow
-                with mlflow.start_run():
-                    mlflow.log_params(params)
-                    mlflow.log_metric("r2_score", r2_score)
+                # Log to MLflow (if available)
+                if MLFLOW_AVAILABLE:
+                    with mlflow.start_run():
+                        mlflow.log_params(params)
+                        mlflow.log_metric("r2_score", r2_score)
 
                 return r2_score
 
@@ -338,10 +345,11 @@ class HyperparameterOptimizer:
 
             r2_score = r2_score(y_test, ensemble_pred)
 
-            # Log to MLflow
-            with mlflow.start_run():
-                mlflow.log_params({**rf_params, **et_params, 'rf_weight': rf_weight, 'et_weight': et_weight})
-                mlflow.log_metric("r2_score", r2_score)
+            # Log to MLflow (if available)
+            if MLFLOW_AVAILABLE:
+                with mlflow.start_run():
+                    mlflow.log_params({**rf_params, **et_params, 'rf_weight': rf_weight, 'et_weight': et_weight})
+                    mlflow.log_metric("r2_score", r2_score)
 
             return r2_score
 

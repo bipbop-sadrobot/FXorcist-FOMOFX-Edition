@@ -479,7 +479,7 @@ def create_cross_pair_analysis_demo():
             'close': prices,
             'volume': np.random.randint(1000, 10000, len(dates)),
             'returns': returns,
-            'volatility': pd.Series(returns).rolling(5).std().fillna(0.01)
+            'volatility': pd.Series(returns).rolling(5, min_periods=1).std().fillna(0.01)
         })
 
         data_dict[pair] = df

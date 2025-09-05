@@ -123,9 +123,9 @@ def cache_data(ttl_seconds: int = 300) -> Callable:
 def calculate_rolling_metrics(returns: pd.Series, window: int = 252) -> dict[str, pd.Series]:
     """Calculate rolling financial metrics."""
     return {
-        'rolling_sharpe': returns.rolling(window).mean() / returns.rolling(window).std() * np.sqrt(252),
-        'rolling_volatility': returns.rolling(window).std() * np.sqrt(252),
-        'rolling_returns': (1 + returns).rolling(window).prod() - 1
+        'rolling_sharpe': returns.rolling(window, min_periods=1).mean() / returns.rolling(window, min_periods=1).std() * np.sqrt(252),
+        'rolling_volatility': returns.rolling(window, min_periods=1).std() * np.sqrt(252),
+        'rolling_returns': (1 + returns).rolling(window, min_periods=1).prod() - 1
     }
 
 def calculate_drawdowns(returns: pd.Series) -> pd.Series:

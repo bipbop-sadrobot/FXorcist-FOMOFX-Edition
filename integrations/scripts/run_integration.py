@@ -25,7 +25,7 @@ def create_example_data(output_path: str, n_samples: int = 1000):
     
     # Generate features
     feat_rsi = np.random.normal(50, 10, n_samples)
-    feat_ma = close.rolling(20).mean()
+    feat_ma = close.rolling(20, min_periods=1).mean()
     feat_vol = np.abs(np.random.normal(0, 0.001, n_samples))
     
     # Generate event and signal columns

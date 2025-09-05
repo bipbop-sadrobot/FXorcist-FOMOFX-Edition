@@ -143,7 +143,7 @@ class UnifiedFeatureEngineer:
 
         # Rolling volatility
         for window in [10, 20, 30]:
-            df[f'volatility_{window}'] = df['returns'].rolling(window).std()
+            df[f'volatility_{window}'] = df['returns'].rolling(window, min_periods=1).std()
 
         # Price volatility
         df['price_volatility'] = (df['high'] - df['low']) / df['close']
@@ -154,8 +154,8 @@ class UnifiedFeatureEngineer:
         """Add trend indicators."""
         # Simple Moving Averages
         for period in [5, 10, 20, 50]:
-            df[f'sma_{period}'] = df['close'].rolling(period).mean()
-            df[f'ema_{period}'] = df['close'].ewm(span=period).mean()
+            df[f'sma_{period}'] = df['close'].rolling(period, min_periods=1).mean()
+            df[f'ema_{period}'] = df['close'].ewm(span=period, min_periods=1).mean()
 
         # Trend strength (difference between short and long term trends)
         df['trend_strength'] = df['ema_10'] - df['ema_50']
@@ -167,8 +167,8 @@ class UnifiedFeatureEngineer:
         df['adx_neg'] = adx.adx_neg()
 
         # Ichimoku Cloud (simplified)
-        df['tenkan_sen'] = (df['high'].rolling(9).max() + df['low'].rolling(9).min()) / 2
-        df['kijun_sen'] = (df['high'].rolling(26).max() + df['low'].rolling(26).min()) / 2
+        df['tenkan_sen'] = (df['high'].rolling(9, min_periods=1).max() + df['low'].rolling(9, min_periods=1).min()) / 2
+        df['kijun_sen'] = (df['high'].rolling(26, min_periods=1).max() + df['low'].rolling(26, min_periods=1).min()) / 2
 
         return df
 
@@ -180,13 +180,13 @@ class UnifiedFeatureEngineer:
 
         # Volume moving averages
         for period in [10, 20, 30]:
-            df[f'volume_sma_{period}'] = df['volume'].rolling(period).mean()
+            df[f'volume_sma_{period}'] = df['volume'].rolling(period, min_periods=1).mean()
 
         # Volume ratios
-        df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+        df['volume_ratio'] = df['volume'] / df['volume'].rolling(20, min_periods=1).mean()
 
         # Volume intensity
-        df['volume_intensity'] = (df['volume'] * np.abs(df['returns'])).rolling(20).mean()
+        df['volume_intensity'] = (df['volume'] * np.abs(df['returns'])).rolling(20, min_periods=1).mean()
 
         # On-balance volume
         df['obv'] = ta.volume.OnBalanceVolumeIndicator(
@@ -208,7 +208,7 @@ class UnifiedFeatureEngineer:
         df['price_impact'] = np.abs(df['close'] - df['open']) / df['spread']
 
         # Realized volatility
-        df['realized_volatility'] = df['returns'].rolling(20).std() * np.sqrt(252)
+        df['realized_volatility'] = df['returns'].rolling(20, min_periods=1).std() * np.sqrt(252)
 
         return df
 
@@ -237,9 +237,9 @@ class UnifiedFeatureEngineer:
         for feature_name, config in custom_features.items():
             try:
                 if config['type'] == 'rolling_mean':
-                    df[feature_name] = df[config['column']].rolling(config['window']).mean()
+                    df[feature_name] = df[config['column']].rolling(config['window'], min_periods=1).mean()
                 elif config['type'] == 'rolling_std':
-                    df[feature_name] = df[config['column']].rolling(config['window']).std()
+                    df[feature_name] = df[config['column']].rolling(config['window'], min_periods=1).std()
                 elif config['type'] == 'lag':
                     df[feature_name] = df[config['column']].shift(config['periods'])
                 elif config['type'] == 'ratio':

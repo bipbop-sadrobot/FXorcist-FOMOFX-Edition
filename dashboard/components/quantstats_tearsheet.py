@@ -325,8 +325,8 @@ class QuantStatsTearsheet(PerformanceComponent):
 
         # Basic performance metrics
         metrics['cumulative_returns'] = (1 + returns).cumprod() - 1
-        metrics['rolling_sharpe'] = returns.rolling(window=30).mean() / returns.rolling(window=30).std() * np.sqrt(252)
-        metrics['rolling_volatility'] = returns.rolling(window=30).std() * np.sqrt(252)
+        metrics['rolling_sharpe'] = returns.rolling(window=30, min_periods=1).mean() / returns.rolling(window=30, min_periods=1).std() * np.sqrt(252)
+        metrics['rolling_volatility'] = returns.rolling(window=30, min_periods=1).std() * np.sqrt(252)
 
         return metrics
 

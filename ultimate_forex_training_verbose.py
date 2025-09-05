@@ -647,8 +647,8 @@ class VerboseForexTrainer:
     # Technical indicator calculation methods
     def _calculate_rsi(self, price, period=14):
         delta = price.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period, min_periods=1).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period, min_periods=1).mean()
         rs = gain / loss
         return 100 - (100 / (1 + rs))
 

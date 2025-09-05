@@ -7,72 +7,81 @@ Simple script to run the comprehensive training pipeline with various options.
 import sys
 import os
 from pathlib import Path
+import argparse
 
 # Add current directory to path
 sys.path.append('.')
 
 def main():
     """Run enhanced training with different configurations."""
+    parser = argparse.ArgumentParser(description="Enhanced Forex AI Training Runner")
+    parser.add_argument(
+        "--mode",
+        type=int,
+        choices=[1, 2, 3, 4],
+        default=1,
+        help="Training mode: 1=basic, 2=optimized, 3=full, 4=custom"
+    )
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Enable hyperparameter optimization"
+    )
+    parser.add_argument(
+        "--ensemble",
+        action="store_true",
+        help="Include ensemble methods"
+    )
+    parser.add_argument(
+        "--interpretability",
+        action="store_true",
+        help="Enable model interpretability"
+    )
+    parser.add_argument(
+        "--features",
+        type=int,
+        default=30,
+        help="Number of features to select"
+    )
+
+    args = parser.parse_args()
 
     print("🤖 Enhanced Forex AI Training Runner")
     print("=" * 50)
 
-    print("\nAvailable training options:")
-    print("1. Basic training (fast, no optimization)")
-    print("2. Optimized training (with hyperparameter tuning)")
-    print("3. Full comprehensive training (all features)")
-    print("4. Custom configuration")
+    if args.mode == 1:
+        print("\n🚀 Running basic training...")
+        cmd = "python comprehensive_training_pipeline.py --no-selection"
 
-    while True:
-        try:
-            choice = input("\nSelect training mode (1-4): ").strip()
+    elif args.mode == 2:
+        print("\n🚀 Running optimized training...")
+        cmd = f"python comprehensive_training_pipeline.py --optimize --features {args.features}"
 
-            if choice == "1":
-                print("\n🚀 Running basic training...")
-                os.system("python comprehensive_training_pipeline.py --no-selection")
+    elif args.mode == 3:
+        print("\n🚀 Running full comprehensive training...")
+        cmd = f"python comprehensive_training_pipeline.py --optimize --ensemble --interpretability --features {args.features}"
 
-            elif choice == "2":
-                print("\n🚀 Running optimized training...")
-                os.system("python comprehensive_training_pipeline.py --optimize --features 30")
+    elif args.mode == 4:
+        print("\n🔧 Custom configuration:")
+        cmd = "python comprehensive_training_pipeline.py"
+        if args.optimize:
+            cmd += " --optimize"
+        if args.ensemble:
+            cmd += " --ensemble"
+        if args.interpretability:
+            cmd += " --interpretability"
+        cmd += f" --features {args.features}"
 
-            elif choice == "3":
-                print("\n🚀 Running full comprehensive training...")
-                os.system("python comprehensive_training_pipeline.py --optimize --ensemble --interpretability --features 50")
+    print(f"Command: {cmd}")
+    result = os.system(cmd)
 
-            elif choice == "4":
-                print("\n🔧 Custom configuration:")
-                optimize = input("Enable hyperparameter optimization? (y/n): ").lower() == 'y'
-                ensemble = input("Include ensemble methods? (y/n): ").lower() == 'y'
-                interpret = input("Enable interpretability? (y/n): ").lower() == 'y'
-                features = int(input("Number of features to select: "))
-
-                cmd = "python comprehensive_training_pipeline.py"
-                if optimize:
-                    cmd += " --optimize"
-                if ensemble:
-                    cmd += " --ensemble"
-                if interpret:
-                    cmd += " --interpretability"
-                cmd += f" --features {features}"
-
-                print(f"\n🚀 Running custom training: {cmd}")
-                os.system(cmd)
-
-            else:
-                print("Invalid choice. Please select 1-4.")
-                continue
-
-            break
-
-        except KeyboardInterrupt:
-            print("\n👋 Training cancelled by user")
-            break
-        except Exception as e:
-            print(f"Error: {e}")
-            continue
+    if result == 0:
+        print("\n✅ Training completed successfully!")
+    else:
+        print(f"\n❌ Training failed with exit code: {result}")
 
     print("\n" + "=" * 50)
-    print("Training completed! Check the following files:")
+    print("Check the following files:")
     print("• logs/comprehensive_training_*.log - Training logs")
     print("• logs/comprehensive_training_results_*.json - Detailed results")
     print("• logs/comprehensive_training_summary_*.txt - Summary report")

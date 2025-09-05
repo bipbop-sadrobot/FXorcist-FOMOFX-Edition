@@ -12,6 +12,7 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
+import os
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -193,7 +194,7 @@ class IntuitionDrivenAnalyzer:
             # Temporal correlation analysis
             if len(df) > self.temporal_window_days:
                 # Rolling correlations over time windows
-                rolling_corr = df['returns'].rolling(window=self.temporal_window_days).corr()
+                rolling_corr = df['returns'].rolling(window=self.temporal_window_days, min_periods=1).corr()
                 insights['temporal_stability'] = rolling_corr.mean()
                 insights['temporal_volatility'] = rolling_corr.std()
 
@@ -469,7 +470,7 @@ def create_sample_analysis():
             'close': prices,
             'volume': np.random.randint(1000, 10000, len(dates)),
             'returns': returns,
-            'volatility': pd.Series(returns).rolling(5).std().fillna(0.01)
+            'volatility': pd.Series(returns).rolling(5, min_periods=1).std().fillna(0.01)
         })
 
         sample_data[pair] = df

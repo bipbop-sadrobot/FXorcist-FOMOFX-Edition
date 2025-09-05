@@ -260,7 +260,7 @@ class EnhancedDataLoader:
         
         # Calculate base statistics with regime awareness
         returns = base_data['close'].pct_change().dropna()
-        volatility = returns.rolling(20).std()
+        volatility = returns.rolling(20, min_periods=1).std()
         
         # Detect existing market regimes
         existing_regimes = self._detect_market_regimes(base_data)
@@ -307,15 +307,15 @@ class EnhancedDataLoader:
         """Detect market regimes using advanced technical analysis."""
         # Calculate key indicators
         returns = data['close'].pct_change()
-        volatility = returns.rolling(20).std()
-        trend = data['close'].rolling(50).mean()
+        volatility = returns.rolling(20, min_periods=1).std()
+        trend = data['close'].rolling(50, min_periods=1).mean()
         
         # Define regime conditions
         regimes = pd.Series(index=data.index, dtype=str)
         regimes.loc[volatility > volatility.quantile(0.8)] = 'volatile'
         regimes.loc[volatility <= volatility.quantile(0.2)] = 'ranging'
         regimes.loc[
-            (returns.rolling(20).mean().abs() > returns.std()) & 
+            (returns.rolling(20, min_periods=1).mean().abs() > returns.std()) &
             (volatility <= volatility.quantile(0.8))
         ] = 'trending'
         
@@ -785,7 +785,7 @@ class EnhancedDataLoader:
         if extreme_moves.any():
             # Smooth out extreme moves
             smooth_window = 3
-            df.loc[extreme_moves, 'close'] = df['close'].rolling(smooth_window).mean()
+            df.loc[extreme_moves, 'close'] = df['close'].rolling(smooth_window, min_periods=1).mean()
             
             # Adjust OHLC accordingly
             df.loc[extreme_moves, 'high'] = df.loc[extreme_moves, 'close'] * 1.002
@@ -845,7 +845,7 @@ class EnhancedDataLoader:
         acf_score = 1 - abs(returns.autocorr() - 0.1)  # Expect slight autocorrelation
         
         # Volatility clustering score
-        vol = returns.rolling(20).std()
+        vol = returns.rolling(20, min_periods=1).std()
         vol_cluster_score = 1 - abs(vol.autocorr() - 0.7)  # Expect strong vol clustering
         
         # Extreme value score

@@ -131,7 +131,7 @@ class ModelEvaluator:
             metrics['ic'] = stats.spearmanr(y_true, y_pred)[0]
             
             # Information Ratio (IC / IC std)
-            rolling_ic = y_true.rolling(20).corr(y_pred)
+            rolling_ic = y_true.rolling(20, min_periods=1).corr(y_pred)
             metrics['ir'] = rolling_ic.mean() / rolling_ic.std()
             
         except Exception as e:

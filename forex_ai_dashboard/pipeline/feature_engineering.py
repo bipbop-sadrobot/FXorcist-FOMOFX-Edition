@@ -303,7 +303,7 @@ class FeatureGenerator:
             
             elif feature_name == 'volatility':
                 window = metadata.parameters.get('window', 20)
-                df['volatility'] = df['returns'].rolling(window=window).std()
+                df['volatility'] = df['returns'].rolling(window=window, min_periods=1).std()
             
             # Technical indicators (using ta library)
             elif feature_name.startswith('rsi_'):
@@ -325,7 +325,7 @@ class FeatureGenerator:
             elif feature_name == 'volume_intensity':
                 df['volume_intensity'] = (
                     df['volume'] * np.abs(df['returns'])
-                ).rolling(window=20).mean()
+                ).rolling(window=20, min_periods=1).mean()
             
             # Market microstructure features
             elif feature_name == 'spread':
@@ -457,12 +457,12 @@ class MarketRegimeDetector:
         
         # Volatility
         if 'returns' in df.columns:
-            vol = df['returns'].rolling(window=20).std()
+            vol = df['returns'].rolling(window=20, min_periods=1).std()
             features.append(vol)
-        
+
         # Trading volume intensity
         if 'volume' in df.columns and 'returns' in df.columns:
-            vol_intensity = (df['volume'] * np.abs(df['returns'])).rolling(window=20).mean()
+            vol_intensity = (df['volume'] * np.abs(df['returns'])).rolling(window=20, min_periods=1).mean()
             features.append(vol_intensity)
         
         # Price momentum

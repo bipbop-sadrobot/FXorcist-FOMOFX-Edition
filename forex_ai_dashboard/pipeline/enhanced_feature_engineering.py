@@ -127,8 +127,8 @@ class EnhancedFeatureEngineer:
 
         # Volume ratios (if volume exists)
         if 'volume' in df.columns:
-            df['volume_change'] = df['volume'].pct_change()
-            df['volume_ma_ratio'] = df['volume'] / df['volume'].rolling(window=20, min_periods=1).mean()
+            df['volume_change'] = df['volume'].pct_change().replace([np.inf, -np.inf], np.nan)
+            df['volume_ma_ratio'] = df['volume'] / df['volume'].rolling(window=20, min_periods=1).mean().replace(0, np.nan)
 
         return df
 
@@ -217,8 +217,9 @@ class EnhancedFeatureEngineer:
         # Business day indicator
         df['is_business_day'] = df['day_of_week'].isin([0, 1, 2, 3, 4]).astype(int)
 
-        # Time of day categories
-        df['time_of_day'] = pd.cut(df['hour'], bins=[0, 6, 12, 18, 24], labels=['night', 'morning', 'afternoon', 'evening'])
+        # Time of day categories (convert to numeric codes)
+        time_of_day_cat = pd.cut(df['hour'], bins=[0, 6, 12, 18, 24], labels=['night', 'morning', 'afternoon', 'evening'])
+        df['time_of_day'] = time_of_day_cat.cat.codes.astype(float)
 
         # Seasonal features
         df['is_month_end'] = df['timestamp'].dt.is_month_end.astype(int)
@@ -258,7 +259,7 @@ class EnhancedFeatureEngineer:
 
         # Price impact (now spread is defined)
         spread_mean = df['spread'].rolling(window=20, min_periods=1).mean()
-        df['price_impact'] = np.abs(df['close'] - df['open']) / spread_mean
+        df['price_impact'] = np.abs(df['close'] - df['open']) / spread_mean.replace(0, np.nan)
 
         # Order flow (simplified)
         df['buy_pressure'] = (df['close'] - df['low']) / (df['high'] - df['low'])
@@ -366,18 +367,33 @@ class EnhancedFeatureEngineer:
     def _add_statistical_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add statistical features."""
         # Z-score
-        df['zscore_20'] = (df['close'] - df['close'].rolling(20, min_periods=1).mean()) / df['close'].rolling(20, min_periods=1).std()
+        rolling_mean = df['close'].rolling(20, min_periods=1).mean()
+        rolling_std = df['close'].rolling(20, min_periods=1).std().replace(0, np.nan)
+        df['zscore_20'] = (df['close'] - rolling_mean) / rolling_std
 
         # Percentile ranks
         df['percentile_20'] = df['close'].rolling(20, min_periods=1).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1])
         df['percentile_50'] = df['close'].rolling(50, min_periods=1).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1])
 
         # Rolling skewness and kurtosis
-        df['rolling_skew_20'] = df['returns_1'].rolling(20, min_periods=1).skew()
-        df['rolling_kurtosis_20'] = df['returns_1'].rolling(20, min_periods=1).kurt()
+        df['rolling_skew_20'] = df['returns_1'].rolling(20, min_periods=1).skew().clip(-10, 10)
+        df['rolling_kurtosis_20'] = df['returns_1'].rolling(20, min_periods=1).kurt().clip(-10, 10)
 
         # Entropy (simplified)
-        df['returns_entropy'] = -df['returns_1'].rolling(20, min_periods=1).apply(lambda x: sum(-p * np.log(p) for p in np.histogram(x, bins=10, density=True)[0] if p > 0))
+        def calculate_entropy(x):
+            x = x.dropna()
+            if len(x) < 2 or x.nunique() <= 1:
+                return 0.0
+            try:
+                hist, _ = np.histogram(x, bins=10, density=True)
+                hist = hist[hist > 0]
+                if len(hist) == 0:
+                    return 0.0
+                return -sum(p * np.log(p) for p in hist)
+            except (ValueError, RuntimeWarning):
+                return 0.0
+        
+        df['returns_entropy'] = df['returns_1'].rolling(20, min_periods=1).apply(calculate_entropy)
 
         return df
 

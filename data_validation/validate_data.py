@@ -117,8 +117,8 @@ def validate_forex_data(
     for col in price_cols:
         if col in df.columns:
             # Calculate rolling statistics for adaptive thresholds
-            rolling_std = df[col].rolling(window=20).std()
-            rolling_mean = df[col].rolling(window=20).mean()
+            rolling_std = df[col].rolling(window=20, min_periods=1).std()
+            rolling_mean = df[col].rolling(window=20, min_periods=1).mean()
             z_scores = np.abs((df[col] - rolling_mean) / rolling_std)
             extreme_outliers = z_scores > z_threshold
             
@@ -133,7 +133,7 @@ def validate_forex_data(
         returns = np.log(df['close'] / df['close'].shift(1)).dropna()
         
         # Volatility clustering check
-        rolling_vol = returns.rolling(window=20).std()
+        rolling_vol = returns.rolling(window=20, min_periods=1).std()
         vol_clustering = np.corrcoef(rolling_vol[20:], rolling_vol[:-20])[0,1]
         if vol_clustering > 0.7:
             warnings.append(f"Strong volatility clustering detected: {vol_clustering:.2f}")

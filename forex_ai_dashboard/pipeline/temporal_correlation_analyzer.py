@@ -7,7 +7,7 @@ for enhanced forex trading model performance.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -226,12 +226,12 @@ class TemporalCorrelationAnalyzer:
             window_data = window_data.set_index('timestamp')
 
             # Calculate rolling statistics
-            rolling_returns = window_data['returns'].rolling(window=f'{days}D').mean()
-            rolling_volatility = window_data['returns'].rolling(window=f'{days}D').std()
+            rolling_returns = window_data['returns'].rolling(window=f'{days}D', min_periods=1).mean()
+            rolling_volatility = window_data['returns'].rolling(window=f'{days}D', min_periods=1).std()
 
             # Calculate rolling correlations
             if 'close' in window_data.columns:
-                rolling_corr = window_data['returns'].rolling(window=f'{days}D').corr(window_data['close'].shift(1))
+                rolling_corr = window_data['returns'].rolling(window=f'{days}D', min_periods=1).corr(window_data['close'].shift(1))
 
             temporal_analysis[window_name] = {
                 'rolling_mean_return': rolling_returns.mean(),
@@ -257,8 +257,8 @@ class TemporalCorrelationAnalyzer:
         df = df.sort_values('timestamp')
 
         # Calculate rolling statistics
-        df['rolling_mean_30'] = df['returns'].rolling(window=30).mean()
-        df['rolling_std_30'] = df['returns'].rolling(window=30).std()
+        df['rolling_mean_30'] = df['returns'].rolling(window=30, min_periods=1).mean()
+        df['rolling_std_30'] = df['returns'].rolling(window=30, min_periods=1).std()
 
         # Detect outliers
         df['z_score'] = (df['returns'] - df['rolling_mean_30']) / df['rolling_std_30']

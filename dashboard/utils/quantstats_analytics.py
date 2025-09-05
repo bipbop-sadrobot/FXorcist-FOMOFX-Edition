@@ -115,9 +115,9 @@ class QuantStatsAnalytics:
                 logger.warning(f"Rolling metrics calculation failed: {e}")
                 # Fallback to simple rolling calculations
                 window = 30  # 30-day rolling window
-                metrics['rolling_sharpe'] = returns.rolling(window).mean() / returns.rolling(window).std() * np.sqrt(252)
-                metrics['rolling_volatility'] = returns.rolling(window).std() * np.sqrt(252)
-                metrics['rolling_sortino'] = returns.rolling(window).mean() / returns[returns < 0].rolling(window).std() * np.sqrt(252)
+                metrics['rolling_sharpe'] = returns.rolling(window, min_periods=1).mean() / returns.rolling(window, min_periods=1).std() * np.sqrt(252)
+                metrics['rolling_volatility'] = returns.rolling(window, min_periods=1).std() * np.sqrt(252)
+                metrics['rolling_sortino'] = returns.rolling(window, min_periods=1).mean() / returns[returns < 0].rolling(window, min_periods=1).std() * np.sqrt(252)
 
             # Monthly returns
             try:
