@@ -18,6 +18,7 @@ from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestRegressor
 import ta  # Technical Analysis library
+from .safe_aroon import SafeAroonIndicator
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ class EnhancedFeatureEngineer:
         # Volume ratios (if volume exists)
         if 'volume' in df.columns:
             df['volume_change'] = df['volume'].pct_change()
-            df['volume_ma_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+            df['volume_ma_ratio'] = df['volume'] / df['volume'].rolling(window=20, min_periods=1).mean()
 
         return df
 
@@ -172,7 +173,7 @@ class EnhancedFeatureEngineer:
 
         # Rolling volatility
         for window in [5, 10, 20, 30]:
-            df[f'volatility_{window}'] = df['returns_1'].rolling(window).std()
+            df[f'volatility_{window}'] = df['returns_1'].rolling(window=window, min_periods=1).std()
 
         # Parkinson volatility (if high/low available)
         df['parkinson_vol'] = np.sqrt((1/(4*np.log(2))) * ((np.log(df['high']/df['low']))**2))
@@ -183,8 +184,8 @@ class EnhancedFeatureEngineer:
         """Add trend indicators."""
         # Simple Moving Averages
         for period in [5, 10, 20, 50, 100]:
-            df[f'sma_{period}'] = df['close'].rolling(period).mean()
-            df[f'ema_{period}'] = df['close'].ewm(span=period).mean()
+            df[f'sma_{period}'] = df['close'].rolling(window=period, min_periods=1).mean()
+            df[f'ema_{period}'] = df['close'].ewm(span=period, min_periods=1).mean()
 
         # Trend strength indicators
         df['trend_strength_10'] = df['ema_10'] - df['ema_50']
@@ -197,10 +198,10 @@ class EnhancedFeatureEngineer:
         df['adx_neg'] = adx.adx_neg()
 
         # Ichimoku Cloud
-        df['tenkan_sen'] = (df['high'].rolling(9).max() + df['low'].rolling(9).min()) / 2
-        df['kijun_sen'] = (df['high'].rolling(26).max() + df['low'].rolling(26).min()) / 2
+        df['tenkan_sen'] = (df['high'].rolling(window=9, min_periods=1).max() + df['low'].rolling(window=9, min_periods=1).min()) / 2
+        df['kijun_sen'] = (df['high'].rolling(26, min_periods=1).max() + df['low'].rolling(26, min_periods=1).min()) / 2
         df['senkou_span_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(26)
-        df['senkou_span_b'] = ((df['high'].rolling(52).max() + df['low'].rolling(52).min()) / 2).shift(26)
+        df['senkou_span_b'] = ((df['high'].rolling(52, min_periods=1).max() + df['low'].rolling(52, min_periods=1).min()) / 2).shift(26)
 
         return df
 
@@ -248,15 +249,16 @@ class EnhancedFeatureEngineer:
 
     def _add_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add market microstructure features."""
-        # Realized volatility
-        df['realized_volatility'] = df['returns_1'].rolling(20).std() * np.sqrt(252)
-
-        # Price impact
-        df['price_impact'] = np.abs(df['close'] - df['open']) / df['spread'].rolling(20).mean()
-
-        # Spread analysis
+        # Spread analysis (define spread first)
         df['spread'] = df['high'] - df['low']
         df['relative_spread'] = df['spread'] / df['close']
+
+        # Realized volatility
+        df['realized_volatility'] = df['returns_1'].rolling(20, min_periods=1).std() * np.sqrt(252)
+
+        # Price impact (now spread is defined)
+        spread_mean = df['spread'].rolling(window=20, min_periods=1).mean()
+        df['price_impact'] = np.abs(df['close'] - df['open']) / spread_mean
 
         # Order flow (simplified)
         df['buy_pressure'] = (df['close'] - df['low']) / (df['high'] - df['low'])
@@ -291,8 +293,8 @@ class EnhancedFeatureEngineer:
         df['vortex_pos'] = vortex.vortex_indicator_pos()
         df['vortex_neg'] = vortex.vortex_indicator_neg()
 
-        # Aroon Indicator
-        aroon = ta.trend.AroonIndicator(df['close'])
+        # Aroon Indicator (using our safe implementation)
+        aroon = SafeAroonIndicator(df['high'], df['low'])
         df['aroon_up'] = aroon.aroon_up()
         df['aroon_down'] = aroon.aroon_down()
         df['aroon_indicator'] = aroon.aroon_indicator()
@@ -345,11 +347,11 @@ class EnhancedFeatureEngineer:
     def _add_volatility_advanced_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add advanced volatility indicators."""
         # Ulcer Index
-        df['ulcer_index'] = np.sqrt((df['close'] - df['close'].rolling(14).max())**2 / 14)
+        df['ulcer_index'] = np.sqrt((df['close'] - df['close'].rolling(14, min_periods=1).max())**2 / 14)
 
         # Donchian Channels
-        df['donchian_upper'] = df['high'].rolling(20).max()
-        df['donchian_lower'] = df['low'].rolling(20).min()
+        df['donchian_upper'] = df['high'].rolling(20, min_periods=1).max()
+        df['donchian_lower'] = df['low'].rolling(20, min_periods=1).min()
         df['donchian_middle'] = (df['donchian_upper'] + df['donchian_lower']) / 2
 
         # Keltner Channels
@@ -364,18 +366,18 @@ class EnhancedFeatureEngineer:
     def _add_statistical_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add statistical features."""
         # Z-score
-        df['zscore_20'] = (df['close'] - df['close'].rolling(20).mean()) / df['close'].rolling(20).std()
+        df['zscore_20'] = (df['close'] - df['close'].rolling(20, min_periods=1).mean()) / df['close'].rolling(20, min_periods=1).std()
 
         # Percentile ranks
-        df['percentile_20'] = df['close'].rolling(20).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1])
-        df['percentile_50'] = df['close'].rolling(50).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1])
+        df['percentile_20'] = df['close'].rolling(20, min_periods=1).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1])
+        df['percentile_50'] = df['close'].rolling(50, min_periods=1).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1])
 
         # Rolling skewness and kurtosis
-        df['rolling_skew_20'] = df['returns_1'].rolling(20).skew()
-        df['rolling_kurtosis_20'] = df['returns_1'].rolling(20).kurt()
+        df['rolling_skew_20'] = df['returns_1'].rolling(20, min_periods=1).skew()
+        df['rolling_kurtosis_20'] = df['returns_1'].rolling(20, min_periods=1).kurt()
 
         # Entropy (simplified)
-        df['returns_entropy'] = -df['returns_1'].rolling(20).apply(lambda x: sum(-p * np.log(p) for p in np.histogram(x, bins=10, density=True)[0] if p > 0))
+        df['returns_entropy'] = -df['returns_1'].rolling(20, min_periods=1).apply(lambda x: sum(-p * np.log(p) for p in np.histogram(x, bins=10, density=True)[0] if p > 0))
 
         return df
 
