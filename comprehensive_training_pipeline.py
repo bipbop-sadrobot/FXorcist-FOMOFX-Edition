@@ -52,15 +52,15 @@ class ComprehensiveTrainingPipeline:
             dir_path.mkdir(parents=True, exist_ok=True)
 
         # Configuration
-        self.symbols = ["EURUSD", "GBPUSD"]
-        self.years = [2023, 2024]
+        self.symbols = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "EURGBP", "EURJPY", "EURCHF", "EURAUD", "EURCAD", "EURNZD", "GBPJPY", "GBPCHF", "GBPAUD", "GBPCAD", "GBPNZD", "CHFJPY", "AUDJPY", "CADJPY", "NZDJPY", "AUDCHF", "CADCHF", "NZDCHF", "AUDCAD", "AUDNZD", "CADNZD"]
+        self.years = [2020, 2021, 2022, 2023, 2024]
 
     def run_comprehensive_training(self,
                                   optimize_hyperparams: bool = True,
                                   use_ensemble: bool = True,
                                   enable_interpretability: bool = True,
                                   feature_selection: bool = True,
-                                  n_features: Optional[int] = 50) -> Dict:
+                                  n_features: Optional[int] = 200) -> Dict:
         """
         Run the complete comprehensive training pipeline.
 
@@ -451,8 +451,8 @@ class ComprehensiveTrainingPipeline:
             logger.info("Optimizing CatBoost hyperparameters")
             optimizer = HyperparameterOptimizer(
                 study_name="comprehensive_catboost",
-                n_trials=50,
-                timeout=600
+                n_trials=5000,
+                timeout=36000
             )
 
             opt_results = optimizer.optimize_catboost(X_train, X_test, y_train, y_test)
@@ -683,7 +683,7 @@ def main():
     parser.add_argument('--optimize', action='store_true', help='Enable hyperparameter optimization')
     parser.add_argument('--ensemble', action='store_true', help='Include ensemble methods')
     parser.add_argument('--interpretability', action='store_true', help='Enable model interpretability')
-    parser.add_argument('--features', type=int, default=50, help='Number of features to select')
+    parser.add_argument('--features', type=int, default=200, help='Number of features to select')
     parser.add_argument('--no-selection', action='store_true', help='Disable feature selection')
 
     args = parser.parse_args()
