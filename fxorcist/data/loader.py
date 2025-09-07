@@ -1,222 +1,136 @@
 """
-FXorcist Data Loader Module
+Robust Data Loader for FXorcist.
 
-Handles data loading, validation, and preprocessing with:
-- Parquet-first approach with CSV fallback
-- Schema validation
-- Synthetic data generation for testing
-- Caching for performance
+Features:
+- Prefers Parquet in data/cleaned/<symbol>.parquet (fast, columnar).
+- Falls back to CSV in data/cleaned/, data/, or top-level <symbol>.csv.
+- Validates schema for OHLCV columns.
+- Optional caching to Parquet (opt-in).
+- Optional synthetic fallback (for tests only).
 """
 
 import os
-import json
-import argparse
+import glob
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from functools import lru_cache
+from typing import Iterable, Optional
 
-import numpy as np
 import pandas as pd
-from pandas.api.types import is_numeric_dtype
-import pyarrow as pa
-import pyarrow.parquet as pq
-from diskcache import Cache
 
-# Set up logging
 logger = logging.getLogger(__name__)
 
-# Schema definition
-REQUIRED_COLUMNS = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-SCHEMA = pa.schema([
-    ('timestamp', pa.timestamp('ns')),
-    ('open', pa.float64()),
-    ('high', pa.float64()),
-    ('low', pa.float64()),
-    ('close', pa.float64()),
-    ('volume', pa.float64())
-])
+class DataLoaderError(Exception):
+    """Raised when data cannot be loaded properly."""
 
-# Cache configuration
-cache = Cache(directory=os.path.join(os.path.dirname(__file__), '.cache'))
+REQUIRED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 
-def validate_schema(df: pd.DataFrame) -> Tuple[bool, List[str]]:
-    """Validate DataFrame schema against requirements."""
-    errors = []
-    
-    # Check required columns
-    missing = [col for col in REQUIRED_COLUMNS if col not in df.columns]
+def _validate_schema(df: pd.DataFrame, usecols: Optional[Iterable[str]] = None) -> None:
+    cols = usecols if usecols is not None else REQUIRED_COLUMNS
+    missing = [c for c in cols if c not in df.columns]
     if missing:
-        errors.append(f"Missing required columns: {missing}")
-    
-    # Check data types
-    for col in [c for c in REQUIRED_COLUMNS if c in df.columns]:
-        if col == 'timestamp':
-            if not pd.api.types.is_datetime64_any_dtype(df[col]):
-                errors.append(f"Column {col} must be datetime type")
-        elif not is_numeric_dtype(df[col]):
-            errors.append(f"Column {col} must be numeric type")
-    
-    return len(errors) == 0, errors
+        raise DataLoaderError(f"Missing required columns: {missing}")
 
-def generate_synthetic_data(
-    start_date: str = "2020-01-01",
-    end_date: str = "2020-12-31",
-    freq: str = "1min"
-) -> pd.DataFrame:
-    """Generate synthetic forex data for testing."""
-    # Create timestamp range
-    dates = pd.date_range(start=start_date, end=end_date, freq=freq)
-    n = len(dates)
-    
-    # Generate random walk prices
-    np.random.seed(42)  # For reproducibility
-    returns = np.random.normal(0, 0.0001, n)
-    close = np.exp(np.cumsum(returns))
-    
-    # Generate OHLCV data
-    df = pd.DataFrame({
-        'timestamp': dates,
-        'close': close,
-        'volume': np.random.lognormal(10, 1, n)
-    })
-    
-    # Add realistic OHLC variation
-    df['open'] = df['close'] * np.exp(np.random.normal(0, 0.0002, n))
-    df['high'] = df[['open', 'close']].max(axis=1) * np.exp(np.abs(np.random.normal(0, 0.0001, n)))
-    df['low'] = df[['open', 'close']].min(axis=1) * np.exp(-np.abs(np.random.normal(0, 0.0001, n)))
-    
-    return df[REQUIRED_COLUMNS]
+def _load_csv(path: Path, usecols: Optional[Iterable[str]]) -> pd.DataFrame:
+    try:
+        return pd.read_csv(path, usecols=usecols, parse_dates=["Date"])
+    except Exception as e:
+        raise DataLoaderError(f"Failed to load CSV {path}: {e}") from e
 
-@cache.memoize()
-def load_parquet(file_path: str) -> pd.DataFrame:
-    """Load parquet file with caching."""
-    return pd.read_parquet(file_path)
+def _load_parquet(path: Path, usecols: Optional[Iterable[str]]) -> pd.DataFrame:
+    try:
+        return pd.read_parquet(path, columns=usecols)
+    except Exception as e:
+        raise DataLoaderError(f"Failed to load Parquet {path}: {e}") from e
 
-def load_csv(file_path: str) -> pd.DataFrame:
-    """Load CSV file with appropriate parsing."""
-    return pd.read_csv(
-        file_path,
-        parse_dates=['timestamp'] if 'timestamp' in pd.read_csv(file_path, nrows=1).columns else None
-    )
+def _synthetic_data(symbol: str, n: int = 500) -> pd.DataFrame:
+    """Deterministic fallback series for tests only."""
+    import numpy as np
+    idx = pd.date_range("2000-01-01", periods=n, freq="D")
+    close = 1.0 + np.cumsum(np.random.default_rng(42).normal(0, 0.01, size=n))
+    return pd.DataFrame({
+        "Date": idx,
+        "Open": close,
+        "High": close * 1.01,
+        "Low": close * 0.99,
+        "Close": close,
+        "Volume": np.random.default_rng(42).integers(100, 1000, size=n),
+    }).set_index("Date")
 
-def load_data(
-    path: Union[str, Path],
-    validate: bool = True,
-    use_cache: bool = True
+def load_symbol(
+    symbol: str,
+    base_dir: Optional[str] = None,
+    usecols: Optional[Iterable[str]] = None,
+    prefer_parquet: bool = True,
+    cache_parquet: bool = False,
+    allow_synthetic_fallback: bool = False,
 ) -> pd.DataFrame:
     """
-    Load data from parquet or CSV file with validation and caching.
-    
+    Load OHLCV data for a symbol.
+
     Args:
-        path: Path to data file (parquet or csv)
-        validate: Whether to validate schema
-        use_cache: Whether to use disk cache
-    
-    Returns:
-        DataFrame with validated schema
+        symbol: e.g. "EURUSD"
+        base_dir: optional base directory (default "data/")
+        usecols: optional subset of columns
+        prefer_parquet: try parquet first (default True)
+        cache_parquet: if True, will write CSV loads back to parquet
+        allow_synthetic_fallback: if True, returns synthetic series if files not found
+
+    Raises:
+        DataLoaderError if files missing or schema invalid (unless fallback allowed).
     """
-    path = Path(path)
-    
-    try:
-        # Try parquet first
-        if path.suffix.lower() == '.parquet':
-            df = load_parquet(str(path)) if use_cache else pd.read_parquet(path)
-        # Fall back to CSV
-        elif path.suffix.lower() == '.csv':
-            logger.info("Loading CSV file (consider converting to parquet for better performance)")
-            df = load_csv(path)
+    root = Path(base_dir or "data")
+    candidates = [
+        root / "cleaned" / f"{symbol}.parquet",
+        root / "cleaned" / f"{symbol}.csv",
+        root / f"{symbol}.csv",
+        Path(f"{symbol}.csv"),
+    ]
+    if not prefer_parquet:
+        candidates.reverse()
+
+    for path in candidates:
+        if path.suffix == ".parquet" and path.exists():
+            df = _load_parquet(path, usecols)
+        elif path.suffix == ".csv" and path.exists():
+            df = _load_csv(path, usecols)
+            if cache_parquet:
+                parquet_path = path.with_suffix(".parquet")
+                try:
+                    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+                    df.to_parquet(parquet_path, index=False)
+                    logger.info("Cached %s to parquet at %s", symbol, parquet_path)
+                except Exception as e:
+                    logger.warning("Failed to cache parquet %s: %s", symbol, e)
         else:
-            raise ValueError(f"Unsupported file type: {path.suffix}")
-        
-        if validate:
-            valid, errors = validate_schema(df)
-            if not valid:
-                raise ValueError(f"Schema validation failed: {errors}")
-        
+            continue
+        _validate_schema(df, usecols)
+        df = df.copy()
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
         return df
-        
-    except Exception as e:
-        logger.error(f"Error loading {path}: {str(e)}")
-        logger.info("Generating synthetic data as fallback")
-        return generate_synthetic_data()
 
-def compute_stats(df: pd.DataFrame, cols: List[str] = REQUIRED_COLUMNS[1:]) -> Dict:
-    """Compute normalization statistics."""
-    stats = {}
-    for c in cols:
-        if c in df.columns:
-            stats[c] = {'mean': float(df[c].mean()), 'std': float(df[c].std())}
-    return stats
+    if allow_synthetic_fallback:
+        logger.warning("Using synthetic fallback for %s", symbol)
+        return _synthetic_data(symbol)
 
-def normalize(df: pd.DataFrame, stats: Dict) -> pd.DataFrame:
-    """Normalize data using precomputed statistics."""
-    df_norm = df.copy()
-    for c, s in stats.items():
-        if c in df.columns:
-            df_norm[c] = (df_norm[c] - s['mean']) / (s['std'] if s['std'] != 0 else 1.0)
-    return df_norm
+    raise DataLoaderError(f"No valid data found for {symbol}")
 
-def split_and_save(
-    df: pd.DataFrame,
-    output_dir: Union[str, Path],
-    train_pct: float = 0.7,
-    val_pct: float = 0.15
-) -> None:
-    """Split data into train/val/test sets and save."""
-    output_dir = Path(output_dir)
-    n = len(df)
-    train_end = int(n * train_pct)
-    val_end = int(n * (train_pct + val_pct))
-    
-    # Create directories
-    for split in ['train', 'val', 'test']:
-        (output_dir / split).mkdir(parents=True, exist_ok=True)
-    
-    # Save splits
-    df.iloc[:train_end].to_parquet(output_dir / 'train' / 'train.parquet', index=False)
-    df.iloc[train_end:val_end].to_parquet(output_dir / 'val' / 'val.parquet', index=False)
-    df.iloc[val_end:].to_parquet(output_dir / 'test' / 'test.parquet', index=False)
-    
-    logger.info(f"Saved splits: train {train_end}, val {val_end-train_end}, test {n-val_end}")
-
-def main():
-    """CLI entry point."""
-    parser = argparse.ArgumentParser(description="FXorcist data preparation tool")
-    parser.add_argument("--input", required=True, help="Input file (parquet or csv)")
-    parser.add_argument("--output-dir", required=True, help="Output directory")
-    parser.add_argument("--train-pct", type=float, default=0.7, help="Training set percentage")
-    parser.add_argument("--val-pct", type=float, default=0.15, help="Validation set percentage")
-    parser.add_argument("--no-cache", action="store_true", help="Disable caching")
-    parser.add_argument("--synthetic", action="store_true", help="Generate synthetic data")
-    args = parser.parse_args()
-    
-    # Set up logging
-    logging.basicConfig(level=logging.INFO)
-    
-    try:
-        # Load or generate data
-        if args.synthetic:
-            df = generate_synthetic_data()
-            logger.info("Generated synthetic data")
-        else:
-            df = load_data(args.input, use_cache=not args.no_cache)
-            logger.info(f"Loaded data from {args.input}")
-        
-        # Compute and save stats
-        stats = compute_stats(df)
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        with open(output_dir / 'stats.json', 'w') as f:
-            json.dump(stats, f, indent=2)
-        logger.info("Saved normalization stats")
-        
-        # Normalize and split
-        df_norm = normalize(df, stats)
-        split_and_save(df_norm, output_dir, args.train_pct, args.val_pct)
-        
-    except Exception as e:
-        logger.error(f"Error processing data: {str(e)}")
-        raise
+@lru_cache(maxsize=None)
+def list_available_symbols(base_dir: Optional[str] = None) -> list[str]:
+    root = Path(base_dir or "data")
+    return sorted(set(
+        Path(f).stem
+        for ext in ("csv", "parquet")
+        for f in glob.glob(str(root / "**" / f"*.{ext}"), recursive=True)
+    ))
 
 if __name__ == "__main__":
-    main()
+    import sys
+    logging.basicConfig(level=logging.INFO)
+    if len(sys.argv) < 2:
+        print("Usage: python -m fxorcist.data.loader <SYMBOL>")
+        sys.exit(1)
+    symbol = sys.argv[1]
+    df = load_symbol(symbol, allow_synthetic_fallback=True)
+    print(df.head())
