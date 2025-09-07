@@ -26,7 +26,7 @@ class SlippageModel:
     It calculates the unfavorable price difference between the intended price
     and the actual fill price due to market movement during order execution.
     """
-    def calculate_slippage(self, instrument: str, direction: str, market_context: Dict[str, Any]) -> float:
+    def calculate_slippage(self, instrument: str, direction: str, market_context: Dict[str, Any], order_time: datetime = None) -> float:
         """
         Returns the unfavorable slippage amount in absolute price terms.
 
@@ -59,26 +59,53 @@ class FixedAbsoluteSlippageModel(SlippageModel):
         return self.absolute_slippage
 
 
-class VolatilitySlippageModel(SlippageModel):
-    """A more realistic model where slippage is a factor of current volatility."""
-    def __init__(self, volatility_factor: float = 0.1):
+class TimeAwareVolatilitySlippageModel(SlippageModel):
+    """A realistic model incorporating time delay and market volatility."""
+    def __init__(self, volatility_factor: float = 0.1, time_factor: float = 0.5, base_latency_ms: float = 50.0):
         """
         Args:
-            volatility_factor: The fraction of the current volatility (e.g., ATR)
-                               to be applied as slippage.
+            volatility_factor: The fraction of current volatility to apply as base slippage
+            time_factor: How much to increase slippage per ms of delay
+            base_latency_ms: Assumed minimum network/execution latency in milliseconds
         """
         if volatility_factor < 0:
             raise ValueError("Volatility factor cannot be negative.")
+        if time_factor < 0:
+            raise ValueError("Time factor cannot be negative.")
+        if base_latency_ms < 0:
+            raise ValueError("Base latency cannot be negative.")
+            
         self.volatility_factor = volatility_factor
+        self.time_factor = time_factor
+        self.base_latency_ms = base_latency_ms
 
-    def calculate_slippage(self, instrument: str, direction: str, market_context: Dict[str, Any]) -> float:
-        volatility = market_context.get('volatility')
-        if volatility is None:
-            # Cannot calculate without volatility data, return zero slippage.
-            return 0.0
+    def calculate_slippage(self, instrument: str, direction: str, market_context: Dict[str, Any], order_time: datetime = None) -> float:
+        # Get base volatility component
+        volatility = market_context.get('volatility', 0.0)
         if volatility < 0:
             raise ValueError("Volatility data cannot be negative.")
-        return volatility * self.volatility_factor
+        
+        base_slippage = volatility * self.volatility_factor
+        
+        # Add time-based component if order time provided
+        if order_time is not None:
+            current_time = datetime.now()
+            delay_ms = (current_time - order_time).total_seconds() * 1000
+            # Apply minimum latency
+            effective_delay = max(delay_ms, self.base_latency_ms)
+            time_slippage = (effective_delay / 1000.0) * self.time_factor * volatility
+        else:
+            time_slippage = (self.base_latency_ms / 1000.0) * self.time_factor * volatility
+            
+        # Consider market impact based on order size relative to volume
+        volume = market_context.get('volume', float('inf'))
+        order_size = abs(float(market_context.get('order_units', 0)))
+        if volume > 0:
+            market_impact = min(1.0, order_size / volume) * base_slippage
+        else:
+            market_impact = 0.0
+            
+        return base_slippage + time_slippage + market_impact
 
 
 class CommissionModel:
