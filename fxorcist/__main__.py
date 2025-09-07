@@ -1,5 +1,6 @@
 """
-FXorcist main entry point for module execution.
+FXorcist main entry point.
+
 Enables running the package as 'python -m fxorcist'
 """
 
