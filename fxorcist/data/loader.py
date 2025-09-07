@@ -7,12 +7,17 @@ Improved data loader:
 - deterministic synthetic fallback for tests with optional GARCH-ish volatility
 """
 from __future__ import annotations
+import asyncio
+import io
+import os
 import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional, Dict
 import pandas as pd
 import numpy as np
+import aiofiles
+import fsspec
 
 logger = logging.getLogger(__name__)
 
@@ -139,9 +144,127 @@ def load_symbol(
     df = _ensure_returns(df)
     return df
 
-async def async_load_symbol(*args, **kwargs):
+async def _read_csv_aio(path: Path | str, usecols: Optional[Iterable[str]] = None) -> pd.DataFrame:
     """
-    If you have fsspec/aiofiles installed, implement async file reads here.
-    Keeping a simple sync wrapper to avoid tight dependency.
+    Read a CSV asynchronously for local files using aiofiles -> pandas via BytesIO.
+    NOTE: this reads the entire file into memory; good for small-to-medium files.
+    For very large files, prefer to use to_thread with pandas.read_csv(stream).
     """
-    return load_symbol(*args, **kwargs)
+    p = Path(path)
+    if p.exists() and p.is_file():
+        # local file: read asynchronously with aiofiles
+        async with aiofiles.open(p, mode="rb") as af:
+            content = await af.read()
+        return pd.read_csv(io.BytesIO(content), parse_dates=['Date'], usecols=usecols)
+    else:
+        # Non-local (or doesn't exist locally) - fallback to fsspec (wrapped in thread)
+        def _sync_read():
+            with fsspec.open(path, mode="rb") as fh:
+                data = fh.read()
+            return pd.read_csv(io.BytesIO(data), parse_dates=['Date'], usecols=usecols)
+        return await asyncio.to_thread(_sync_read)
+
+async def _read_parquet_aio(path: Path | str, columns: Optional[Iterable[str]] = None) -> pd.DataFrame:
+    """
+    Parquet readers are usually blocking (pyarrow/fastparquet). Wrap in thread.
+    Support local or fsspec URLs.
+    """
+    p = Path(path)
+    def _sync_read():
+        # If path is local, use pandas directly; otherwise use fsspec to open remote and read bytes to buffer
+        if p.exists():
+            return _read_parquet(p, columns=columns)
+        else:
+            # fsspec path / remote object
+            with fsspec.open(path, mode="rb") as fh:
+                data = fh.read()
+            # pandas.read_parquet can accept a BytesIO if pyarrow supports it
+            try:
+                return pd.read_parquet(io.BytesIO(data), columns=columns)
+            except Exception:
+                # fallback: save to temp file and read
+                tmp = Path(os.path.join(os.getcwd(), f".tmp_parquet_{os.getpid()}"))
+                tmp.write_bytes(data)
+                try:
+                    return pd.read_parquet(tmp, columns=columns)
+                finally:
+                    try:
+                        tmp.unlink()
+                    except Exception:
+                        pass
+    return await asyncio.to_thread(_sync_read)
+
+async def async_load_symbol(
+    symbol: str,
+    base_dir: Optional[str] = None,
+    usecols: Optional[Iterable[str]] = None,
+    prefer_parquet: bool = True,
+    cache_parquet: bool = False,
+    allow_synthetic_fallback: bool = False,
+    timeout: Optional[float] = None,
+) -> pd.DataFrame:
+    """
+    Async wrapper to load a symbol. Practical behavior:
+      - If file is local CSV, uses aiofiles to read non-blocking.
+      - Parquet reading remains synchronous under the hood but is executed on a thread via asyncio.to_thread.
+      - Supports fsspec URLs (s3://, gs://, http://) by delegating to fsspec in a thread.
+      - `timeout` will cancel the operation with asyncio.wait_for (if provided).
+    """
+    base = Path(base_dir) if base_dir else Path.cwd()
+    sym = symbol.upper()
+    candidates = _candidates_for_symbol(base, sym)
+    cols = None if usecols is None else list(usecols)
+
+    async def _inner():
+        # Try parquet first if preferred
+        if prefer_parquet:
+            pq = candidates[0]
+            # pq can be Path or remote; check local existence first
+            if Path(pq).exists():
+                return await _read_parquet_aio(str(pq), columns=cols)
+            # if not local, attempt using fsspec wrapper
+            try:
+                # attempt remote read (this will raise if unreachable)
+                return await _read_parquet_aio(str(pq), columns=cols)
+            except Exception:
+                pass
+
+        # Try CSV candidates (use aio read for local files, else fsspec/thread)
+        for p in candidates[1:]:
+            # if local and exists, use aio
+            if Path(p).exists():
+                try:
+                    df = await _read_csv_aio(str(p), usecols=cols)
+                except Exception as e:
+                    logger.exception("async csv read failed for %s: %s", p, e)
+                    raise DataLoaderError(e)
+                # optionally cache to parquet (runs in thread)
+                if cache_parquet:
+                    try:
+                        target = base / "data" / "cleaned" / f"{sym}.parquet"
+                        if not target.exists():
+                            # write parquet in thread to avoid blocking loop
+                            await asyncio.to_thread(lambda: (target.parent.mkdir(parents=True, exist_ok=True), df.to_parquet(target, compression="snappy", index=False)))
+                            logger.info("async cached %s -> %s", p, target)
+                    except Exception as ex:
+                        logger.warning("async parquet cache write failed: %s", ex)
+                return df
+            else:
+                # fallback to fsspec read in thread
+                try:
+                    df = await _read_csv_aio(str(p), usecols=cols)
+                    return df
+                except Exception:
+                    continue
+
+        # nothing found
+        if allow_synthetic_fallback:
+            logger.warning("async: no file found for %s — return synthetic", sym)
+            # synthetic is synchronous but cheap — run in thread to be consistent
+            return await asyncio.to_thread(lambda: _synthetic_series(sym))
+        raise DataLoaderError(f"async: No data files found for {sym}")
+
+    if timeout:
+        return await asyncio.wait_for(_inner(), timeout=timeout)
+    else:
+        return await _inner()
