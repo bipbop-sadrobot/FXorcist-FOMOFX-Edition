@@ -1,183 +1,56 @@
-"""
-FXorcist CLI Module
-
-Provides command-line interface with subcommands for data operations,
-model training, backtesting, and dashboard launching.
-"""
-
 import argparse
-import logging
-import os
-import sys
-from pathlib import Path
-from typing import Optional
-
+import yaml
+import json
 from rich.console import Console
-from rich.logging import RichHandler
-from rich.traceback import install
+from rich.table import Table
+from typing import Optional
+from fxorcist.data.loader import load_symbol, list_available_symbols
+from fxorcist.ml.optuna_runner import run_optuna
 
-# Install Rich traceback handler
-install(show_locals=True)
-
-# Set up Rich console and logging
 console = Console()
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler(console=console, rich_tracebacks=True)]
-)
-logger = logging.getLogger("fxorcist")
 
-def setup_data_parser(subparsers):
-    """Set up data subcommand parser."""
-    parser = subparsers.add_parser(
-        "data",
-        help="Data operations (download, validate, transform)",
-    )
-    parser.add_argument(
-        "--symbol",
-        type=str,
-        help="Currency pair symbol (e.g., EURUSD)",
-        required=True
-    )
-    parser.add_argument(
-        "--start",
-        type=str,
-        help="Start date (YYYY-MM-DD)",
-        required=True
-    )
-    parser.add_argument(
-        "--end",
-        type=str,
-        help="End date (YYYY-MM-DD)",
-        required=True
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        help="Output directory",
-        default="data"
-    )
-    return parser
-
-def setup_train_parser(subparsers):
-    """Set up training subcommand parser."""
-    parser = subparsers.add_parser(
-        "train",
-        help="Train models with Optuna optimization",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        help="Training configuration file",
-        required=True
-    )
-    parser.add_argument(
-        "--trials",
-        type=int,
-        help="Number of Optuna trials",
-        default=100
-    )
-    return parser
-
-def setup_backtest_parser(subparsers):
-    """Set up backtest subcommand parser."""
-    parser = subparsers.add_parser(
-        "backtest",
-        help="Run vectorized backtests",
-    )
-    parser.add_argument(
-        "--data",
-        type=str,
-        help="Data file or directory",
-        required=True
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        help="Model file",
-        required=True
-    )
-    parser.add_argument(
-        "--parallel",
-        action="store_true",
-        help="Enable parallel processing"
-    )
-    return parser
-
-def setup_dashboard_parser(subparsers):
-    """Set up dashboard subcommand parser."""
-    parser = subparsers.add_parser(
-        "dashboard",
-        help="Launch Streamlit dashboard",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        help="Port number",
-        default=8501
-    )
-    return parser
-
-def get_parser():
-    """Create main argument parser."""
-    parser = argparse.ArgumentParser(
-        description="FXorcist: AI-driven FX trading system",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    
-    # Add global arguments
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose output"
-    )
-    parser.add_argument(
-        "--safe-mode",
-        action="store_true",
-        help="Enable safe mode (no live trading)"
-    )
-    
-    # Add subcommands
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    setup_data_parser(subparsers)
-    setup_train_parser(subparsers)
-    setup_backtest_parser(subparsers)
-    setup_dashboard_parser(subparsers)
-    
-    return parser
-
-def main(args: Optional[list] = None):
-    """Main entry point for the CLI."""
-    parser = get_parser()
-    args = parser.parse_args(args)
-    
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
-    
-    if not args.command:
-        parser.print_help()
-        sys.exit(1)
-    
+def load_config(path: Optional[str]) -> dict:
+    if not path:
+        return {}
     try:
-        if args.command == "data":
-            from fxorcist.data.loader import process_data
-            process_data(args)
-        elif args.command == "train":
-            from fxorcist.ml.optuna_runner import run_optimization
-            run_optimization(args)
-        elif args.command == "backtest":
-            from fxorcist.pipeline.vectorized_backtest import run_backtest
-            run_backtest(args)
-        elif args.command == "dashboard":
-            from fxorcist.dashboard.app import run_dashboard
-            run_dashboard(args)
-    except Exception as e:
-        logger.error(f"Error executing {args.command}: {str(e)}")
-        if args.verbose:
-            raise
-        sys.exit(1)
+        with open(path) as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:
+        console.print("[red]Failed to load config. Ignoring.[/red]")
+        return {}
 
-if __name__ == "__main__":
-    main()
+def main(argv=None):
+    parser = argparse.ArgumentParser('fxorcist')
+    parser.add_argument('--config', '-c', help='YAML config file', default=None)
+    parser.add_argument('--json', action='store_true', help='Output JSON results')
+    sub = parser.add_subparsers(dest='cmd', required=True)
+
+    p_data = sub.add_parser('data')
+    p_data.add_argument('--symbol', required=True)
+
+    p_opt = sub.add_parser('optuna')
+    p_opt.add_argument('--symbol', required=True)
+    p_opt.add_argument('--trials', type=int, default=30)
+    p_opt.add_argument('--out', default='artifacts/best_params.yaml')
+    p_opt.add_argument('--storage', default=None)
+    p_opt.add_argument('--mlflow', action='store_true')
+
+    args = parser.parse_args(argv)
+    cfg = load_config(args.config)
+
+    if args.cmd == 'data':
+        df = load_symbol(args.symbol, base_dir=cfg.get('base_dir'))
+        if args.json:
+            print(df.head().to_json(orient='split', date_format='iso'))
+        else:
+            console.print(df.head())
+    elif args.cmd == 'optuna':
+        df = load_symbol(args.symbol, base_dir=cfg.get('base_dir'))
+        res = run_optuna(df, n_trials=args.trials, seed=cfg.get('seed', 42), out_path=args.out, storage=args.storage, use_mlflow=args.mlflow)
+        if args.json:
+            print(json.dumps({'best': res['best_params']}))
+        else:
+            table = Table(title="Best params")
+            for k,v in res['best_params'].items():
+                table.add_row(str(k), str(v))
+            console.print(table)
