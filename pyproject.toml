@@ -8,6 +8,11 @@ requires-python = ">=3.10"
 [project.scripts]
 fxorcist = "fxorcist.cli:main"
 
+[project.optional-dependencies]
+mlflow = ["mlflow>=2.0"]
+ray = ["ray[default]>=2.6.0"]
+test = ["pytest>=7.0", "pytest-asyncio>=0.21.0", "hypothesis"]
+
 [build-system]
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
