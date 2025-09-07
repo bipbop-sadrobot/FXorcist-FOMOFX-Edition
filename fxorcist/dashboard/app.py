@@ -1,59 +1,176 @@
-import streamlit as st
-from fxorcist.data.loader import list_available_symbols, load_symbol
-from fxorcist.dashboard.charts import candlestick_fig, equity_curve_fig, drawdown_fig
-from fxorcist.pipeline.vectorized_backtest import sma_strategy_returns, simple_metrics
-import pandas as pd
-import io
+"""
+Main FastAPI application for the FXorcist dashboard.
 
-st.set_page_config(page_title="FXorcist", layout="wide")
+Integrates all components and provides the main entry point.
+"""
 
-@st.cache_data(ttl=600)
-def _get_symbols(base_dir: str | None = None):
-    return list_available_symbols(base_dir)
+import logging
+import asyncio
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import uvicorn
+from typing import List
 
-@st.cache_data(ttl=600)
-def _load(symbol: str, base_dir: str | None = None):
-    return load_symbol(symbol, base_dir=base_dir, allow_synthetic_fallback=True)
+from .routers import portfolio, market, system
+from .auth import auth_service
+from .cache import cache_instance, CacheConfig
+from .websocket import connection_manager
+from .middleware import setup_middleware
+from .models import User
 
-def _df_to_excel_bytes(df: pd.DataFrame) -> bytes:
-    import pandas as pd
-    with io.BytesIO() as b:
-        with pd.ExcelWriter(b, engine='xlsxwriter') as writer:
-            df.to_excel(writer, sheet_name='data', index=True)
-        return b.getvalue()
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("logs/dashboard.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-def streamlit_app():
-    st.title("FXorcist — Strategy Explorer")
-    left, right = st.columns([3,1])
-    symbols = _get_symbols() or ['EURUSD','GBPUSD','AUDUSD']
-    with right:
-        st.header('Controls')
-        symbol = st.selectbox('Symbol', symbols)
-        fast = st.slider('Fast MA', 5, 40, 10)
-        slow = st.slider('Slow MA', 21, 200, 50)
-        txn_cost = st.number_input('Transaction cost', min_value=0.0, max_value=0.01, value=0.0001, format="%.6f")
-        show_rsi = st.checkbox('Show RSI')
-        run_backtest = st.button('Run Backtest')
-        st.markdown('---')
-        if st.button('Download data (Excel)'):
-            df = _load(symbol)
-            st.download_button('Download Excel', _df_to_excel_bytes(df), file_name=f"{symbol}.xlsx")
-    with left:
-        df = _load(symbol)
-        st.subheader('Price Chart')
-        st.plotly_chart(candlestick_fig(df), use_container_width=True)
-        if run_backtest:
-            with st.spinner('Running backtest...'):
-                rets = sma_strategy_returns(df, fast=fast, slow=slow, transaction_cost=txn_cost)
-                metrics = simple_metrics(rets)
-                st.metric('Sharpe', f"{metrics['sharpe']:.3f}")
-                st.metric('Total Return', f"{metrics['total_return']:.3%}")
-                st.metric('Max Drawdown', f"{metrics['max_drawdown']:.3%}")
-                st.plotly_chart(equity_curve_fig(rets), use_container_width=True)
-                st.plotly_chart(drawdown_fig(rets), use_container_width=True)
-        st.sidebar.header('Advanced')
-        if st.sidebar.checkbox('Show Raw Data'):
-            st.write(df.head(50))
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle."""
+    try:
+        # Initialize services
+        logger.info("Initializing services...")
+        
+        # Start cache service
+        await cache_instance.start()
+        logger.info("Cache service started")
+        
+        # Start WebSocket manager
+        await connection_manager.start()
+        logger.info("WebSocket manager started")
+        
+        yield
+        
+    finally:
+        # Cleanup on shutdown
+        logger.info("Shutting down services...")
+        
+        # Stop WebSocket manager
+        await connection_manager.stop()
+        logger.info("WebSocket manager stopped")
+        
+        # Stop cache service
+        await cache_instance.stop()
+        logger.info("Cache service stopped")
 
-if __name__ == '__main__':
-    streamlit_app()
+def create_app() -> FastAPI:
+    """Create and configure FastAPI application."""
+    app = FastAPI(
+        title="FXorcist Dashboard API",
+        description="Trading dashboard backend API",
+        version="1.0.0",
+        lifespan=lifespan
+    )
+    
+    # Configure CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Configure appropriately in production
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
+    
+    # Setup middleware
+    setup_middleware(app, {
+        "rate_limit": {
+            "requests_per_minute": 60,
+            "burst_limit": 100
+        },
+        "redis_url": "redis://localhost:6379/0"
+    })
+    
+    # Include routers
+    app.include_router(portfolio.router)
+    app.include_router(market.router)
+    app.include_router(system.router)
+    
+    # Add authentication endpoints
+    @app.post("/token")
+    async def login(username: str, password: str):
+        """Login endpoint."""
+        user = auth_service.authenticate_user(username, password)
+        if not user:
+            return {"error": "Invalid credentials"}
+        
+        access_token = auth_service.create_access_token(
+            data={"sub": user.username, "scopes": user.scopes}
+        )
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer"
+        }
+    
+    @app.get("/users/me")
+    async def read_users_me(
+        current_user: User = Depends(auth_service.get_current_active_user)
+    ):
+        """Get current user information."""
+        return current_user
+    
+    # Add startup event handler
+    @app.on_event("startup")
+    async def startup_event():
+        """Handle application startup."""
+        logger.info("Starting FXorcist Dashboard API")
+        
+        # Initialize configuration
+        config = {
+            "environment": os.getenv("FXORCIST_ENV", "development"),
+            "log_level": os.getenv("LOG_LEVEL", "INFO"),
+            "redis_url": os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        }
+        
+        # Configure logging
+        logging.getLogger().setLevel(config["log_level"])
+        
+        logger.info(f"Configuration loaded: {config}")
+    
+    # Add shutdown event handler
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        """Handle application shutdown."""
+        logger.info("Shutting down FXorcist Dashboard API")
+    
+    # Add exception handlers
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        """Handle uncaught exceptions."""
+        logger.error(f"Unhandled exception: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "detail": str(exc) if app.debug else None
+            }
+        )
+    
+    return app
+
+def run_app():
+    """Run the application."""
+    app = create_app()
+    
+    # Configure uvicorn
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        reload=True,  # Enable auto-reload during development
+        workers=4  # Number of worker processes
+    )
+    
+    # Start server
+    server = uvicorn.Server(config)
+    server.run()
+
+if __name__ == "__main__":
+    run_app()
