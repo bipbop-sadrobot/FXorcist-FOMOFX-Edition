@@ -107,12 +107,13 @@ class TestExecutionHandler:
     def mock_data_handler(self):
         """Create a mock data handler for testing."""
         handler = MagicMock()
-        handler.get_current_price.return_value = {
+        handler.get_market_data_at_time.return_value = {
+            'timestamp': datetime.now(),
             'bid': 1.2000,
-            'ask': 1.2002
+            'ask': 1.2002,
+            'volatility': 0.0002,
+            'volume': 1000000
         }
-        handler.get_current_volatility.return_value = 0.0002
-        handler.get_current_volume.return_value = 1000000
         return handler
     
     @pytest.fixture
@@ -122,8 +123,9 @@ class TestExecutionHandler:
         return ExecutionHandler(
             data_handler=mock_data_handler,
             event_queue=event_queue,
-            slippage_model=FixedAbsoluteSlippageModel(0.0001),
-            commission_model=OANDACommissionModel(5.0)
+            slippage_model=TimeAwareVolatilitySlippageModel(),
+            commission_model=OANDACommissionModel(5.0),
+            max_execution_delay_ms=500.0
         )
     
     def test_market_buy_execution(self, execution_handler):
@@ -187,7 +189,64 @@ class TestExecutionHandler:
         
         with pytest.raises(ValueError, match="Unsupported order type"):
             execution_handler.execute_order(order)
+    def test_execution_time_validation(self, execution_handler):
+        """Test validation of order execution timing."""
+        current_time = datetime.now()
+        
+        # Test future order rejection
+        future_time = current_time + timedelta(seconds=1)
+        with pytest.raises(ValueError, match="Order timestamp is in the future"):
+            execution_handler.validate_execution_time(future_time)
+        
+        # Test old order rejection
+        old_time = current_time - timedelta(seconds=1)
+        with pytest.raises(ValueError, match="Order execution delay .* exceeds maximum"):
+            execution_handler.validate_execution_time(old_time)
+        
+        # Test sequence validation
+        execution_handler.last_market_timestamp = current_time
+        earlier_time = current_time - timedelta(milliseconds=100)
+        with pytest.raises(ValueError, match="Order timestamp precedes last known market data"):
+            execution_handler.validate_execution_time(earlier_time)
 
+    def test_market_data_versioning(self, execution_handler, mock_data_handler):
+        """Test proper versioning of market data."""
+        order_time = datetime.now()
+        
+        # Setup mock data with timestamp
+        market_data = {
+            'timestamp': order_time,
+            'bid': 1.2000,
+            'ask': 1.2002,
+            'volatility': 0.0002,
+            'volume': 1000000
+        }
+        mock_data_handler.get_market_data_at_time.return_value = market_data
+        
+        # Get market context and verify timestamp tracking
+        context = execution_handler.get_market_context('EUR_USD', order_time)
+        assert execution_handler.last_market_timestamp == order_time
+        assert context['timestamp'] == order_time
+
+    def test_time_aware_slippage(self, execution_handler, mock_data_handler):
+        """Test slippage calculation with time awareness."""
+        current_time = datetime.now()
+        order_time = current_time - timedelta(milliseconds=100)
+        
+        order = OrderEvent(
+            timestamp=order_time,
+            instrument='EUR_USD',
+            units=10000,
+            direction='BUY'
+        )
+        
+        # Execute order and get fill event
+        execution_handler.execute_order(order)
+        fill_event = execution_handler.event_queue.get_nowait()
+        
+        # Verify slippage reflects time delay
+        assert fill_event.slippage > 0
+        assert fill_event.fill_price > mock_data_handler.get_market_data_at_time.return_value['ask']
 
 if __name__ == '__main__':
     pytest.main([__file__])
