@@ -19,6 +19,12 @@ class EventType(Enum):
     RISK = "RISK"
     PORTFOLIO = "PORTFOLIO"
     SYSTEM = "SYSTEM"
+    BACKTEST_START = "BACKTEST_START"
+    BACKTEST_UPDATE = "BACKTEST_UPDATE"
+    BACKTEST_COMPLETE = "BACKTEST_COMPLETE"
+    OPTIMIZATION_START = "OPTIMIZATION_START"
+    OPTIMIZATION_UPDATE = "OPTIMIZATION_UPDATE"
+    OPTIMIZATION_COMPLETE = "OPTIMIZATION_COMPLETE"
 
 @dataclass(frozen=True)
 class Event:
@@ -102,4 +108,80 @@ class FillEvent(Event):
             type=EventType.FILL,
             timestamp=timestamp or datetime.now(timezone.utc),
             data=data
+        )
+
+@dataclass(frozen=True)
+class BacktestStartEvent(Event):
+    """Backtest initialization event."""
+    def __init__(self, config: Dict[str, Any], timestamp: datetime = None):
+        super().__init__(
+            type=EventType.BACKTEST_START,
+            timestamp=timestamp or datetime.now(timezone.utc),
+            data=config
+        )
+
+@dataclass(frozen=True)
+class BacktestUpdateEvent(Event):
+    """Backtest progress update event."""
+    def __init__(self, progress: float, metrics: Dict[str, float],
+                 timestamp: datetime = None):
+        data = {
+            'progress': progress,
+            'metrics': metrics
+        }
+        super().__init__(
+            type=EventType.BACKTEST_UPDATE,
+            timestamp=timestamp or datetime.now(timezone.utc),
+            data=data
+        )
+
+@dataclass(frozen=True)
+class BacktestCompleteEvent(Event):
+    """Backtest completion event with results."""
+    def __init__(self, stats: Dict[str, Any], trades: List[Dict],
+                 timestamp: datetime = None):
+        data = {
+            'stats': stats,
+            'trades': trades
+        }
+        super().__init__(
+            type=EventType.BACKTEST_COMPLETE,
+            timestamp=timestamp or datetime.now(timezone.utc),
+            data=data
+        )
+
+@dataclass(frozen=True)
+class OptimizationStartEvent(Event):
+    """Parameter optimization start event."""
+    def __init__(self, config: Dict[str, Any], timestamp: datetime = None):
+        super().__init__(
+            type=EventType.OPTIMIZATION_START,
+            timestamp=timestamp or datetime.now(timezone.utc),
+            data=config
+        )
+
+@dataclass(frozen=True)
+class OptimizationUpdateEvent(Event):
+    """Optimization progress update event."""
+    def __init__(self, trial: int, best_value: float, best_params: Dict[str, Any],
+                 timestamp: datetime = None):
+        data = {
+            'trial': trial,
+            'best_value': best_value,
+            'best_params': best_params
+        }
+        super().__init__(
+            type=EventType.OPTIMIZATION_UPDATE,
+            timestamp=timestamp or datetime.now(timezone.utc),
+            data=data
+        )
+
+@dataclass(frozen=True)
+class OptimizationCompleteEvent(Event):
+    """Optimization completion event with results."""
+    def __init__(self, results: Dict[str, Any], timestamp: datetime = None):
+        super().__init__(
+            type=EventType.OPTIMIZATION_COMPLETE,
+            timestamp=timestamp or datetime.now(timezone.utc),
+            data=results
         )
