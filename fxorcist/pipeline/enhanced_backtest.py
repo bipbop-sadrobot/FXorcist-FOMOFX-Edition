@@ -239,7 +239,8 @@ def plot_equity_curve(trades_df: pd.DataFrame, title: str = "Equity Curve") -> g
     return fig
 
 def backtest_strategy(df: pd.DataFrame, strategy_func: Callable,
-                     config: BacktestConfig = None) -> Tuple[pd.DataFrame, TradeStats]:
+                     config: BacktestConfig = None,
+                     validation_window: int = 252) -> Tuple[pd.DataFrame, TradeStats]:
     """
     Run backtest with realistic market simulation.
     
@@ -247,6 +248,18 @@ def backtest_strategy(df: pd.DataFrame, strategy_func: Callable,
         df: Price data with OHLCV columns
         strategy_func: Strategy function that generates signals
         config: Backtest configuration
+        
+    Returns:
+        Tuple of (trades DataFrame, trade statistics)
+    """
+    """
+    Run backtest with realistic market simulation and look-ahead prevention.
+    
+    Args:
+        df: Price data with OHLCV columns
+        strategy_func: Strategy function that generates signals
+        config: Backtest configuration
+        validation_window: Number of days for out-of-sample validation
         
     Returns:
         Tuple of (trades DataFrame, trade statistics)
@@ -261,21 +274,41 @@ def backtest_strategy(df: pd.DataFrame, strategy_func: Callable,
     entry_time = None
     capital = config.initial_capital
     
-    # Generate strategy signals
-    signals = strategy_func(df)
+    # Split data into training and validation sets
+    train_size = len(df) - validation_window
+    train_df = df.iloc[:train_size].copy()
+    validation_df = df.iloc[train_size:].copy()
     
+    # Generate signals using only training data for parameter fitting
+    signals = pd.Series(index=df.index, dtype=float)
+    signals.iloc[:train_size] = strategy_func(train_df)
+    
+    # Generate validation signals using only current and past data
+    for i in range(train_size, len(df)):
+        # Create historical window up to current timestamp
+        historical_data = df.iloc[:i+1].copy()
+        signals.iloc[i] = strategy_func(historical_data).iloc[-1]
+    
+    # Process signals with execution simulation
     for i, row in df.iterrows():
+        # Validate timestamp sequence
+        if i > 0 and (row.name - df.index[i-1]).total_seconds() < 0:
+            raise ValueError(f"Non-chronological timestamps detected at {row.name}")
         # Apply latency to signal processing
         signal_time = apply_latency(i, config)
         
         # Process entry signals
         if signals.iloc[i] != 0 and current_position == 0:
             direction = signals.iloc[i]
+            
+            # Calculate execution costs
+            spread = (row['Ask'] - row['Bid']) / 2 if 'Ask' in row and 'Bid' in row else row['Close'] * 0.0001
             slippage = calculate_slippage(row['Close'], row['Volume'], direction, config)
             commission = calculate_commission(row['Close'], row['Volume'], config)
             
-            # Calculate entry price with slippage
-            entry_price = row['Close'] + slippage
+            # Calculate entry price with spread and slippage
+            base_price = row['Ask'] if direction > 0 else row['Bid'] if 'Ask' in row and 'Bid' in row else row['Close']
+            entry_price = base_price + slippage
             entry_time = signal_time
             current_position = direction
             
@@ -284,7 +317,9 @@ def backtest_strategy(df: pd.DataFrame, strategy_func: Callable,
             
         # Process exit signals
         elif (signals.iloc[i] == 0 or signals.iloc[i] == -current_position) and current_position != 0:
-            exit_price = row['Close']
+            # Calculate exit price with spread
+            base_price = row['Bid'] if current_position > 0 else row['Ask'] if 'Ask' in row and 'Bid' in row else row['Close']
+            exit_price = base_price
             exit_time = signal_time
             
             # Calculate exit slippage and commission
