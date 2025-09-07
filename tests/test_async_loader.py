@@ -148,3 +148,64 @@ async def test_async_memory_cleanup(tmp_path):
     # Verify no temp files left behind
     temp_files = list(Path(tmp_path).glob(".tmp_parquet_*"))
     assert len(temp_files) == 0
+
+@pytest.mark.asyncio
+async def test_async_remote_files(tmp_path):
+    """Test remote file handling via fsspec."""
+    import fsspec.implementations.local
+    
+    # Create a mock remote filesystem using local files
+    d = tmp_path / "remote"
+    d.mkdir(parents=True)
+    f = d / "REMOTE.csv"
+    
+    # Create test data
+    test_data = pd.DataFrame({
+        'Date': pd.date_range('2020-01-01', periods=5),
+        'Open': [1.0, 1.1, 1.2, 1.3, 1.4],
+        'High': [1.1, 1.2, 1.3, 1.4, 1.5],
+        'Low': [0.9, 1.0, 1.1, 1.2, 1.3],
+        'Close': [1.0, 1.1, 1.2, 1.3, 1.4]
+    })
+    test_data.to_csv(f, index=False)
+    
+    # Test successful remote read
+    remote_path = f"file://{f}"  # Use file:// protocol to simulate remote
+    df = await async_load_symbol(
+        "REMOTE",
+        base_dir=str(d),
+        prefer_parquet=False  # Force CSV read
+    )
+    
+    assert not df.empty
+    assert isinstance(df.index, pd.DatetimeIndex)
+    assert len(df) == 5
+    assert all(col in df.columns for col in REQUIRED_COLS - {"Date"})
+    assert "Returns" in df.columns
+    assert not df.isnull().any().any()
+    
+    # Test unreachable remote
+    bad_path = "s3://nonexistent-bucket/REMOTE.csv"
+    with pytest.raises(DataLoaderError):
+        await async_load_symbol(
+            "REMOTE",
+            base_dir="s3://nonexistent-bucket",
+            prefer_parquet=False
+        )
+    
+    # Test remote parquet
+    parquet_file = d / "REMOTE.parquet"
+    test_data.to_parquet(parquet_file, index=False)
+    
+    df_parquet = await async_load_symbol(
+        "REMOTE",
+        base_dir=str(d),
+        prefer_parquet=True
+    )
+    
+    assert not df_parquet.empty
+    pd.testing.assert_frame_equal(
+        df_parquet.reset_index(),
+        df.reset_index(),
+        check_dtype=True
+    )
