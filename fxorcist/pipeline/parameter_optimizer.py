@@ -17,13 +17,11 @@ from .enhanced_backtest import backtest_strategy, BacktestConfig, TradeStats
 class OptimizationConfig:
     """Configuration for parameter optimization."""
     param_ranges: Dict[str, Union[List, tuple]]  # Parameter ranges to explore
-    n_trials: int = 100  # Number of optimization trials
-    timeout: Optional[int] = None  # Optimization timeout in seconds
-    n_jobs: int = -1  # Number of parallel jobs (-1 for all cores)
+    n_trials: int = 50  # Number of optimization trials
+    validation_window: int = 252  # Days for out-of-sample validation
     optimization_metric: str = "sharpe_ratio"  # Metric to optimize
-    pruner: str = "median"  # Optuna pruner type
-    sampler: str = "tpe"  # Optuna sampler type
     direction: str = "maximize"  # Optimization direction
+    min_trades: int = 20  # Minimum trades required for valid evaluation
 
 class ParameterOptimizer:
     """
@@ -50,31 +48,16 @@ class ParameterOptimizer:
         self.param_importance = None
         
     def _create_study(self) -> optuna.Study:
-        """Create Optuna study with configured settings."""
-        # Configure pruner
-        if self.config.pruner == "median":
-            pruner = optuna.pruners.MedianPruner()
-        elif self.config.pruner == "percentile":
-            pruner = optuna.pruners.PercentilePruner(25.0)
-        else:
-            pruner = optuna.pruners.NopPruner()
-            
-        # Configure sampler
-        if self.config.sampler == "tpe":
-            sampler = optuna.samplers.TPESampler()
-        elif self.config.sampler == "random":
-            sampler = optuna.samplers.RandomSampler()
-        else:
-            sampler = optuna.samplers.GridSampler(self.config.param_ranges)
-        
+        """Create Optuna study with focused settings."""
+        sampler = optuna.samplers.TPESampler(seed=42)  # For reproducibility
         return optuna.create_study(
             direction=self.config.direction,
-            pruner=pruner,
             sampler=sampler
         )
     
-    def _objective(self, trial: optuna.Trial, data: pd.DataFrame,
-                  strategy_generator: Callable, backtest_config: BacktestConfig) -> float:
+    def _evaluate_params(self, params: Dict[str, Any], data: pd.DataFrame,
+                        strategy_generator: Callable,
+                        backtest_config: BacktestConfig) -> float:
         """
         Objective function for optimization.
         
@@ -87,6 +70,37 @@ class ParameterOptimizer:
         Returns:
             Optimization metric value
         """
+        try:
+            # Create strategy with parameters
+            strategy = strategy_generator(**params)
+            
+            # Run backtest with validation window
+            trades_df, stats = backtest_strategy(
+                data, strategy, backtest_config,
+                validation_window=self.config.validation_window
+            )
+            
+            # Check minimum trade requirement
+            if len(trades_df) < self.config.min_trades:
+                return float('-inf') if self.config.direction == "maximize" else float('inf')
+            
+            # Get optimization metric
+            metric_value = getattr(stats, self.config.optimization_metric)
+            
+            # Penalize extreme drawdowns
+            if stats.max_drawdown > 0.3:  # 30% max drawdown limit
+                return float('-inf') if self.config.direction == "maximize" else float('inf')
+            
+            return metric_value
+            
+        except Exception as e:
+            self.logger.warning(f"Parameter evaluation failed: {e}")
+            return float('-inf') if self.config.direction == "maximize" else float('inf')
+    
+    def _objective(self, trial: optuna.Trial, data: pd.DataFrame,
+                  strategy_generator: Callable,
+                  backtest_config: BacktestConfig) -> float:
+        """Generate parameters and evaluate them."""
         # Generate parameters for this trial
         params = {}
         for name, range_def in self.config.param_ranges.items():
@@ -98,28 +112,11 @@ class ParameterOptimizer:
             else:
                 params[name] = trial.suggest_categorical(name, range_def)
         
-        # Create strategy function with these parameters
-        strategy = strategy_generator(**params)
-        
-        # Run backtest
-        try:
-            _, stats = backtest_strategy(data, strategy, backtest_config)
-            
-            # Get optimization metric
-            metric_value = getattr(stats, self.config.optimization_metric)
-            
-            # Handle invalid values
-            if pd.isna(metric_value) or np.isinf(metric_value):
-                return float('-inf') if self.config.direction == "maximize" else float('inf')
-            
-            return metric_value
-            
-        except Exception as e:
-            self.logger.warning(f"Trial failed: {e}")
-            return float('-inf') if self.config.direction == "maximize" else float('inf')
-    
+        return self._evaluate_params(params, data, strategy_generator, backtest_config)
+
     def optimize(self, data: pd.DataFrame, strategy_generator: Callable,
-                backtest_config: BacktestConfig) -> Dict[str, Any]:
+                backtest_config: BacktestConfig,
+                progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
         Run parameter optimization.
         
@@ -144,8 +141,7 @@ class ParameterOptimizer:
         self.study.optimize(
             objective,
             n_trials=self.config.n_trials,
-            timeout=self.config.timeout,
-            n_jobs=self.config.n_jobs,
+            n_jobs=1,  # Sequential for reproducibility
             show_progress_bar=True
         )
         
