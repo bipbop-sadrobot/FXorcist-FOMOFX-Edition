@@ -1,32 +1,69 @@
-*.csv
-*.zip
-data/
-models/
-catboost_info/
-logs/
-cache/
-dashboard/cache/
-memory_system_starter.zip
-tracked_files.txt
-post_cleanup_tracked_files.txt
-git_sizer_report.txt
-file_sizes.txt
-final_tracked_files.txt
-venv*/
-venv310/
+# Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 *.so
-.DS_Store
-*.egg-info/
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Project-specific
+artifacts/
+*.pkl
+*.parquet
+*.csv
+logs/
 *.log
-cookies.txt
+.mlflow/
+mlruns/
+optuna.db
+
+# Secrets and configs
+secrets/
+.env
+*.key
+*.pem
+
+# Documentation
+_build/
+_static/
+_templates/
+
+# Temporary files
 *.tmp
+*.temp
 *.bak
-visualizations/*.png
-.kilocode/
-=0.10.2
+*~
