@@ -1,0 +1,61 @@
+# FXorcist Risk Management Configuration
+
+# Trading Risk Parameters
+trading:
+  max_position_size: 0.02  # Maximum position size as percentage of account
+  max_total_risk: 0.05     # Maximum total portfolio risk
+  max_drawdown: 0.15      # Maximum allowed drawdown
+  stop_loss_pips: 50      # Default stop loss in pips
+  take_profit_ratio: 2.0  # Risk:Reward ratio
+
+# Currency Pairs
+pairs:
+  allowed:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - AUDUSD
+    - USDCAD
+  max_correlation: 0.8    # Maximum allowed correlation between pairs
+
+# Time Restrictions
+trading_hours:
+  start: "00:00"
+  end: "23:59"
+  timezone: "UTC"
+  excluded_days: ["Saturday", "Sunday"]
+
+# Risk Limits
+limits:
+  max_trades_per_day: 10
+  max_trades_per_pair: 3
+  min_volatility: 0.001
+  max_volatility: 0.05
+  min_spread: 0.0001
+  max_spread: 0.003
+
+# Safety Features
+safety:
+  auto_shutdown_loss: 0.10  # Auto shutdown on 10% daily loss
+  max_slippage: 3          # Maximum allowed slippage in pips
+  require_confirmation: true
+  news_trading:
+    enabled: false
+    impact_threshold: "High"
+
+# Monitoring
+monitoring:
+  log_level: "INFO"
+  metrics_interval: 300  # 5 minutes
+  alert_channels:
+    - email
+    - telegram
+  performance_tracking:
+    enabled: true
+    interval: "1h"
+
+# Recovery
+recovery:
+  auto_hedge: false
+  max_recovery_trades: 3
+  cooling_period: 3600  # 1 hour in seconds
