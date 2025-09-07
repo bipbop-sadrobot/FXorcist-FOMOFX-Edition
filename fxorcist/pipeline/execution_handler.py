@@ -61,7 +61,8 @@ class ExecutionHandler:
         data_handler,
         event_queue: queue.Queue,
         slippage_model: Optional[SlippageModel] = None,
-        commission_model: Optional[CommissionModel] = None
+        commission_model: Optional[CommissionModel] = None,
+        max_execution_delay_ms: float = 500.0
     ):
         """
         Initialize the execution handler.
@@ -79,24 +80,99 @@ class ExecutionHandler:
         self.slippage_model = slippage_model or FixedAbsoluteSlippageModel()
         self.commission_model = commission_model or OANDACommissionModel()
 
-    def get_market_context(self, instrument: str) -> Dict[str, Any]:
         """
-        Gather current market data needed for transaction cost calculations.
+        Initialize the execution handler.
+        
+        Args:
+            data_handler: Provides market data (prices, volatility)
+            event_queue: Queue for publishing fill events
+            slippage_model: Model for calculating price slippage
+            commission_model: Model for calculating trade commissions
+            max_execution_delay_ms: Maximum allowed delay between order and execution
+        """
+        self.data_handler = data_handler
+        self.event_queue = event_queue
+        
+        # Use default models if none provided
+        self.slippage_model = slippage_model or TimeAwareVolatilitySlippageModel()
+        self.commission_model = commission_model or OANDACommissionModel()
+        
+        if max_execution_delay_ms <= 0:
+            raise ValueError("Maximum execution delay must be positive")
+        self.max_execution_delay_ms = max_execution_delay_ms
+        
+        # Track the last processed market data timestamp
+        self.last_market_timestamp = None
+
+    def validate_execution_time(self, order_time: datetime) -> None:
+        """
+        Validates that an order's execution time is realistic and prevents look-ahead.
+        
+        Args:
+            order_time: The timestamp of the order
+            
+        Raises:
+            ValueError: If order timing violates execution constraints
+        """
+        current_time = datetime.now()
+        
+        # Check if order is from the future
+        if order_time > current_time:
+            raise ValueError("Order timestamp is in the future")
+            
+        # Check if order is too old
+        delay_ms = (current_time - order_time).total_seconds() * 1000
+        if delay_ms > self.max_execution_delay_ms:
+            raise ValueError(f"Order execution delay ({delay_ms}ms) exceeds maximum allowed ({self.max_execution_delay_ms}ms)")
+            
+        # Ensure market data sequence
+        if self.last_market_timestamp and order_time < self.last_market_timestamp:
+            raise ValueError("Order timestamp precedes last known market data")
+
+    def get_market_context(self, instrument: str, order_time: datetime) -> Dict[str, Any]:
+        """
+        Gather market data needed for transaction cost calculations.
         
         Args:
             instrument: The trading instrument symbol
+            order_time: The timestamp of the order to prevent look-ahead
             
         Returns:
             Dictionary containing market data like volatility, bid, ask prices
         """
+        # Get market data as of order time
+        market_data = self.data_handler.get_market_data_at_time(instrument, order_time)
+        
+        # Update last known market timestamp
+        self.last_market_timestamp = market_data.get('timestamp')
+        
         return {
-            'volatility': self.data_handler.get_current_volatility(instrument),
-            'bid': self.data_handler.get_current_price(instrument)['bid'],
-            'ask': self.data_handler.get_current_price(instrument)['ask'],
-            'volume': self.data_handler.get_current_volume(instrument)
+            'timestamp': market_data.get('timestamp'),
+            'volatility': market_data.get('volatility'),
+            'bid': market_data.get('bid'),
+            'ask': market_data.get('ask'),
+            'volume': market_data.get('volume'),
+            'order_units': market_data.get('order_units')
         }
 
     def simulate_fill(self, order_event: OrderEvent) -> None:
+        """
+        Simulates the execution of an order with realistic constraints.
+        
+        This method:
+        1. Validates execution timing
+        2. Gets historical market data from order time
+        3. Applies appropriate transaction costs
+        4. Generates a fill event
+        
+        Args:
+            order_event: The order to execute
+            
+        Raises:
+            ValueError: If execution constraints are violated
+        """
+        # Validate execution timing
+        self.validate_execution_time(order_event.timestamp)
         """
         Simulates the execution of an order, applying slippage and commission.
         
@@ -110,14 +186,21 @@ class ExecutionHandler:
         Args:
             order_event: The order to execute
         """
-        # Get current market context
-        market_context = self.get_market_context(order_event.instrument)
+        # Get market context as of order time
+        market_context = self.get_market_context(
+            order_event.instrument,
+            order_event.timestamp
+        )
         
-        # Calculate slippage
+        # Add order details to market context for impact calculation
+        market_context['order_units'] = abs(order_event.units)
+        
+        # Calculate slippage with time awareness
         slippage_amount = self.slippage_model.calculate_slippage(
             order_event.instrument,
             order_event.direction,
-            market_context
+            market_context,
+            order_event.timestamp
         )
         
         # Determine fill price based on direction and slippage
