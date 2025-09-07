@@ -192,7 +192,11 @@ async def _read_parquet_aio(path: Path | str, columns: Optional[Iterable[str]] =
                         tmp.unlink()
                     except Exception:
                         pass
-    return await asyncio.to_thread(_sync_read)
+    try:
+        return await asyncio.to_thread(_sync_read)
+    except Exception as e:
+        logger.exception("async parquet read failed: %s", e)
+        raise DataLoaderError(f"Failed to read parquet: {e}")
 
 async def async_load_symbol(
     symbol: str,
@@ -202,6 +206,7 @@ async def async_load_symbol(
     cache_parquet: bool = False,
     allow_synthetic_fallback: bool = False,
     timeout: Optional[float] = None,
+    validate_schema: bool = True,
 ) -> pd.DataFrame:
     """
     Async wrapper to load a symbol. Practical behavior:
@@ -216,52 +221,71 @@ async def async_load_symbol(
     cols = None if usecols is None else list(usecols)
 
     async def _inner():
+        df = None
         # Try parquet first if preferred
         if prefer_parquet:
             pq = candidates[0]
             # pq can be Path or remote; check local existence first
             if Path(pq).exists():
-                return await _read_parquet_aio(str(pq), columns=cols)
-            # if not local, attempt using fsspec wrapper
-            try:
-                # attempt remote read (this will raise if unreachable)
-                return await _read_parquet_aio(str(pq), columns=cols)
-            except Exception:
-                pass
-
-        # Try CSV candidates (use aio read for local files, else fsspec/thread)
-        for p in candidates[1:]:
-            # if local and exists, use aio
-            if Path(p).exists():
+                df = await _read_parquet_aio(str(pq), columns=cols)
+            if df is None:
+                # if not local, attempt using fsspec wrapper
                 try:
-                    df = await _read_csv_aio(str(p), usecols=cols)
+                    # attempt remote read (this will raise if unreachable)
+                    df = await _read_parquet_aio(str(pq), columns=cols)
                 except Exception as e:
-                    logger.exception("async csv read failed for %s: %s", p, e)
-                    raise DataLoaderError(e)
-                # optionally cache to parquet (runs in thread)
-                if cache_parquet:
+                    logger.debug("remote parquet read failed: %s", e)
+
+        if df is None:
+            # Try CSV candidates (use aio read for local files, else fsspec/thread)
+            for p in candidates[1:]:
+                # if local and exists, use aio
+                if Path(p).exists():
                     try:
-                        target = base / "data" / "cleaned" / f"{sym}.parquet"
-                        if not target.exists():
-                            # write parquet in thread to avoid blocking loop
-                            await asyncio.to_thread(lambda: (target.parent.mkdir(parents=True, exist_ok=True), df.to_parquet(target, compression="snappy", index=False)))
-                            logger.info("async cached %s -> %s", p, target)
-                    except Exception as ex:
-                        logger.warning("async parquet cache write failed: %s", ex)
-                return df
-            else:
-                # fallback to fsspec read in thread
+                        df = await _read_csv_aio(str(p), usecols=cols)
+                        break
+                    except Exception as e:
+                        logger.debug("local csv read failed for %s: %s", p, e)
+                        continue
+                # if not local, try remote
                 try:
                     df = await _read_csv_aio(str(p), usecols=cols)
-                    return df
-                except Exception:
+                    break
+                except Exception as e:
+                    logger.debug("remote csv read failed for %s: %s", p, e)
                     continue
 
-        # nothing found
+        if df is not None:
+            # Ensure proper DataFrame structure
+            df = _ensure_index_and_types(df)
+            if validate_schema:
+                _validate_schema(df)
+            df = _ensure_returns(df)
+
+            # optionally cache to parquet (runs in thread)
+            if cache_parquet:
+                try:
+                    target = base / "data" / "cleaned" / f"{sym}.parquet"
+                    if not target.exists():
+                        # write parquet in thread to avoid blocking loop
+                        await asyncio.to_thread(lambda: (
+                            target.parent.mkdir(parents=True, exist_ok=True),
+                            df.to_parquet(target, compression="snappy", index=False)
+                        ))
+                        logger.info("async cached %s -> %s", p, target)
+                except Exception as ex:
+                    logger.warning("async parquet cache write failed: %s", ex)
+            return df
+
+        # No data found - try synthetic
         if allow_synthetic_fallback:
             logger.warning("async: no file found for %s — return synthetic", sym)
             # synthetic is synchronous but cheap — run in thread to be consistent
-            return await asyncio.to_thread(lambda: _synthetic_series(sym))
+            df = await asyncio.to_thread(lambda: _synthetic_series(sym))
+            if validate_schema:
+                _validate_schema(df)
+            return df
+        
         raise DataLoaderError(f"async: No data files found for {sym}")
 
     if timeout:
