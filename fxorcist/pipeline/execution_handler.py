@@ -56,6 +56,7 @@ class ExecutionHandler:
     - Commission costs based on configured model
     """
     
+
     def __init__(
         self,
         data_handler,
@@ -72,24 +73,10 @@ class ExecutionHandler:
             event_queue: Queue for publishing fill events
             slippage_model: Model for calculating price slippage
             commission_model: Model for calculating trade commissions
-        """
-        self.data_handler = data_handler
-        self.event_queue = event_queue
-        
-        # Use default models if none provided
-        self.slippage_model = slippage_model or FixedAbsoluteSlippageModel()
-        self.commission_model = commission_model or OANDACommissionModel()
-
-        """
-        Initialize the execution handler.
-        
-        Args:
-            data_handler: Provides market data (prices, volatility)
-            event_queue: Queue for publishing fill events
-            slippage_model: Model for calculating price slippage
-            commission_model: Model for calculating trade commissions
             max_execution_delay_ms: Maximum allowed delay between order and execution
         """
+        from ..models.transaction_costs import TimeAwareVolatilitySlippageModel
+        
         self.data_handler = data_handler
         self.event_queue = event_queue
         
@@ -97,11 +84,12 @@ class ExecutionHandler:
         self.slippage_model = slippage_model or TimeAwareVolatilitySlippageModel()
         self.commission_model = commission_model or OANDACommissionModel()
         
+        # Validate and set execution constraints
         if max_execution_delay_ms <= 0:
             raise ValueError("Maximum execution delay must be positive")
         self.max_execution_delay_ms = max_execution_delay_ms
         
-        # Track the last processed market data timestamp
+        # Initialize market data tracking
         self.last_market_timestamp = None
 
     def validate_execution_time(self, order_time: datetime) -> None:
