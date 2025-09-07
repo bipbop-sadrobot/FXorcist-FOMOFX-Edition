@@ -150,8 +150,8 @@ class ExecutionHandler:
         This method:
         1. Validates execution timing
         2. Gets historical market data from order time
-        3. Applies appropriate transaction costs
-        4. Generates a fill event
+        3. Applies appropriate transaction costs (spread, slippage, commission)
+        4. Generates and publishes a fill event
         
         Args:
             order_event: The order to execute
@@ -161,19 +161,6 @@ class ExecutionHandler:
         """
         # Validate execution timing
         self.validate_execution_time(order_event.timestamp)
-        """
-        Simulates the execution of an order, applying slippage and commission.
-        
-        This method:
-        1. Gets current market prices (bid/ask)
-        2. Calculates slippage based on market conditions
-        3. Determines final fill price including spread and slippage
-        4. Calculates commission
-        5. Generates and publishes a fill event
-        
-        Args:
-            order_event: The order to execute
-        """
         # Get market context as of order time
         market_context = self.get_market_context(
             order_event.instrument,
