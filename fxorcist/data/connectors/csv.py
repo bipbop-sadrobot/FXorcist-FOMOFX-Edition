@@ -1,99 +1,31 @@
 import pandas as pd
-import numpy as np
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Union, Dict, Any
-from rich.console import Console
-from rich.logging import RichHandler
+from typing import List, Optional
 
-import logging
 from .base import DataConnector
 from fxorcist.events.event_bus import Event
 
-# Configure rich logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler()]
-)
-logger = logging.getLogger("CSVConnector")
-console = Console()
-
 class CSVConnector(DataConnector):
     """
-    Advanced CSV/Parquet data connector with robust loading and validation.
+    Minimal, production-ready CSV data connector for market data.
     
-    Supports multiple data formats:
-    - Parquet files
-    - CSV files
-    - Multiple timestamp column formats
-    - Flexible price column handling
+    Supports loading market data from CSV and Parquet files with 
+    minimal configuration and robust error handling.
     """
     
-    SUPPORTED_PRICE_COLUMNS = [
-        'mid', 'close', 'open', 'high', 'low', 
-        'bid', 'ask', 'bid_price', 'ask_price'
-    ]
-    
-    def __init__(
-        self, 
-        data_dir: Union[str, Path] = "data/cleaned", 
-        timestamp_column: str = 'timestamp',
-        validate_data: bool = True
-    ):
+    def __init__(self, data_dir: str):
         """
-        Initialize CSVConnector with configurable parameters.
+        Initialize CSVConnector with data directory.
         
         Args:
-            data_dir: Directory containing market data files
-            timestamp_column: Name of the timestamp column
-            validate_data: Enable strict data validation
+            data_dir: Absolute path to directory containing market data files
         """
         self.data_dir = Path(data_dir)
-        self.timestamp_column = timestamp_column
-        self.validate_data = validate_data
         
         if not self.data_dir.exists():
-            logger.warning(f"Data directory {self.data_dir} does not exist.")
-    
-    def _validate_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Validate and preprocess DataFrame before event generation.
-        
-        Checks:
-        - Timestamp column exists and is datetime
-        - At least one price column exists
-        - No missing critical data
-        """
-        if not isinstance(df, pd.DataFrame):
-            raise ValueError("Input must be a pandas DataFrame")
-        
-        if self.timestamp_column not in df.columns:
-            raise ValueError(f"Timestamp column '{self.timestamp_column}' not found")
-        
-        # Convert timestamp column to datetime if not already
-        df[self.timestamp_column] = pd.to_datetime(df[self.timestamp_column])
-        
-        # Find first available price column
-        price_column = next(
-            (col for col in self.SUPPORTED_PRICE_COLUMNS if col in df.columns), 
-            None
-        )
-        
-        if price_column is None:
-            raise ValueError(f"No price column found. Supported: {self.SUPPORTED_PRICE_COLUMNS}")
-        
-        # Handle bid/ask to mid price conversion
-        if price_column == 'bid' and 'ask' in df.columns:
-            df['mid'] = (df['bid'] + df['ask']) / 2
-        
-        # Optional data validation
-        if self.validate_data:
-            df.dropna(subset=[self.timestamp_column, price_column], inplace=True)
-        
-        return df.sort_values(self.timestamp_column)
-    
+            raise ValueError(f"Data directory not found: {self.data_dir}")
+
     async def fetch(
         self,
         symbol: str,
@@ -101,61 +33,48 @@ class CSVConnector(DataConnector):
         end: Optional[datetime] = None
     ) -> List[Event]:
         """
-        Fetch market data for a specific symbol and date range.
+        Fetch market events for a specific symbol within a date range.
         
-        Supports multiple file formats and robust error handling.
+        Args:
+            symbol: Trading symbol (e.g., 'EURUSD')
+            start: Start datetime for data retrieval
+            end: Optional end datetime for data retrieval
+        
+        Returns:
+            List of market events
         """
-        try:
-            # Try multiple file extensions
-            file_paths = [
-                self.data_dir / f"{symbol}.parquet",
-                self.data_dir / f"{symbol}.csv",
-                self.data_dir / f"{symbol}_1min.parquet",
-                self.data_dir / f"{symbol}_1min.csv"
-            ]
-            
-            df = None
-            for path in file_paths:
-                if path.exists():
-                    try:
-                        if path.suffix == '.parquet':
-                            df = pd.read_parquet(path)
-                        else:
-                            df = pd.read_csv(path, parse_dates=[self.timestamp_column])
-                        break
-                    except Exception as e:
-                        logger.warning(f"Could not read {path}: {e}")
-            
-            if df is None:
-                raise FileNotFoundError(f"No data found for {symbol} in {self.data_dir}")
-            
-            # Validate and preprocess DataFrame
-            df = self._validate_dataframe(df)
-            
-            # Filter by date range
-            mask = df[self.timestamp_column] >= start
-            if end:
-                mask &= df[self.timestamp_column] <= end
-            
-            df = df[mask]
-            
-            logger.info(f"Loaded {len(df)} events for {symbol} from {start} to {end}")
-            
-            events = [
-                Event(
-                    timestamp=row[self.timestamp_column],
-                    type="tick",
-                    payload={
-                        "symbol": symbol,
-                        "mid": row.get('mid', np.nan),
-                        **{k: v for k, v in row.items() if k not in [self.timestamp_column, 'mid']}
-                    }
-                )
-                for _, row in df.iterrows()
-            ]
-            
-            return events
+        # Attempt to load Parquet first, fallback to CSV
+        parquet_path = self.data_dir / f"{symbol}.parquet"
+        csv_path = self.data_dir / f"{symbol}.csv"
         
-        except Exception as e:
-            logger.error(f"Error fetching data for {symbol}: {e}")
-            raise
+        if parquet_path.exists():
+            df = pd.read_parquet(parquet_path)
+        elif csv_path.exists():
+            df = pd.read_csv(csv_path, parse_dates=['timestamp'])
+        else:
+            raise FileNotFoundError(f"No data found for {symbol}")
+        
+        # Filter by date range
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        mask = df['timestamp'] >= start
+        if end:
+            mask &= df['timestamp'] <= end
+        
+        df = df[mask].sort_values('timestamp')
+        
+        # Generate events
+        events = []
+        for _, row in df.iterrows():
+            payload = row.to_dict()
+            
+            # Compute mid price if bid/ask available
+            if 'bid' in payload and 'ask' in payload:
+                payload['mid'] = (payload['bid'] + payload['ask']) / 2
+            
+            events.append(Event(
+                timestamp=row['timestamp'],
+                type='tick',
+                payload=payload
+            ))
+        
+        return events
