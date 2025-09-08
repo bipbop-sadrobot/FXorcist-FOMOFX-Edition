@@ -1,0 +1,17 @@
+# config.yaml
+data:
+  default_symbol: EURUSD
+  storage: parquet
+  parquet_dir: data/cleaned
+
+backtest:
+  commission_pct: 0.00002
+  slippage_model: simple
+  latency_ms: 100
+
+server:
+  port: 8080
+
+optim:
+  engine: optuna
+  n_trials: 200
