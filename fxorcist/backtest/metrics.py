@@ -1,156 +1,166 @@
 """
-Performance metrics calculation for backtest results.
+Performance metrics calculation for trading strategy backtests.
 """
 from typing import List, Dict, Any
-import numpy as np
 from datetime import datetime
+import numpy as np
+import pandas as pd
 
-def calculate_returns(snapshots: List[Dict[str, Any]]) -> np.ndarray:
-    """Calculate returns series from equity curve."""
-    equity = np.array([s["equity"] for s in snapshots])
-    returns = np.diff(equity) / equity[:-1]
-    return returns
-
-def calculate_metrics(snapshots: List[Dict[str, Any]]) -> Dict[str, float]:
+class MetricsCollector:
     """
-    Calculate performance metrics from backtest snapshots.
+    Comprehensive metrics collection for trading strategy performance.
+    
+    Tracks portfolio equity, trades, and calculates various performance metrics.
+    """
+    def __init__(self, initial_capital: float = 100000.0):
+        """
+        Initialize metrics collector.
+        
+        Args:
+            initial_capital: Starting portfolio value
+        """
+        self.initial_capital = initial_capital
+        self.equity_curve: List[Dict[str, Any]] = [
+            {'timestamp': datetime.now(), 'equity': initial_capital}
+        ]
+        self.trades: List[Dict[str, Any]] = []
+    
+    def record_trade(
+        self, 
+        symbol: str, 
+        side: str, 
+        entry_price: float, 
+        exit_price: float, 
+        size: float, 
+        entry_time: datetime, 
+        exit_time: datetime
+    ) -> None:
+        """
+        Record a completed trade.
+        
+        Args:
+            symbol: Trading symbol
+            side: Trade side ('buy' or 'sell')
+            entry_price: Price at trade entry
+            exit_price: Price at trade exit
+            size: Trade size
+            entry_time: Trade entry timestamp
+            exit_time: Trade exit timestamp
+        """
+        trade_return = (exit_price - entry_price) / entry_price if side == 'buy' else (entry_price - exit_price) / entry_price
+        trade_profit = trade_return * size * entry_price
+        
+        self.trades.append({
+            'symbol': symbol,
+            'side': side,
+            'entry_price': entry_price,
+            'exit_price': exit_price,
+            'size': size,
+            'entry_time': entry_time,
+            'exit_time': exit_time,
+            'return': trade_return,
+            'profit': trade_profit
+        })
+    
+    def update_equity(self, timestamp: datetime, equity: float) -> None:
+        """
+        Update the equity curve with a new data point.
+        
+        Args:
+            timestamp: Current timestamp
+            equity: Current portfolio value
+        """
+        self.equity_curve.append({
+            'timestamp': timestamp,
+            'equity': equity
+        })
+    
+    def calculate_metrics(self) -> Dict[str, float]:
+        """
+        Calculate comprehensive trading performance metrics.
+        
+        Returns:
+            Dictionary of performance metrics
+        """
+        # Convert equity curve to DataFrame
+        df = pd.DataFrame(self.equity_curve)
+        df.set_index('timestamp', inplace=True)
+        
+        # Calculate returns
+        df['returns'] = df['equity'].pct_change()
+        
+        # Basic metrics
+        total_return = (df['equity'].iloc[-1] / self.initial_capital) - 1
+        
+        # Annualized return (CAGR)
+        trading_days = (df.index[-1] - df.index[0]).days
+        years = trading_days / 365
+        cagr = (1 + total_return) ** (1 / years) - 1 if years > 0 else 0
+        
+        # Sharpe Ratio (assuming risk-free rate = 0)
+        returns = df['returns'].dropna()
+        sharpe_ratio = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() > 0 else 0
+        
+        # Maximum Drawdown
+        cumulative_max = df['equity'].cummax()
+        drawdown = (df['equity'] - cumulative_max) / cumulative_max
+        max_drawdown = drawdown.min()
+        
+        # Trade-level metrics
+        trade_df = pd.DataFrame(self.trades)
+        win_rate = (trade_df['profit'] > 0).mean() if len(trade_df) > 0 else 0
+        avg_trade_return = trade_df['return'].mean() if len(trade_df) > 0 else 0
+        
+        return {
+            'total_return': total_return,
+            'cagr': cagr,
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown,
+            'win_rate': win_rate,
+            'avg_trade_return': avg_trade_return,
+            'total_trades': len(self.trades),
+            'initial_capital': self.initial_capital,
+            'final_equity': df['equity'].iloc[-1]
+        }
+    
+    def summary(self) -> str:
+        """
+        Generate a human-readable summary of performance metrics.
+        
+        Returns:
+            Formatted performance summary string
+        """
+        metrics = self.calculate_metrics()
+        summary_lines = [
+            "Performance Summary:",
+            f"Total Return: {metrics['total_return']:.2%}",
+            f"CAGR: {metrics['cagr']:.2%}",
+            f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}",
+            f"Max Drawdown: {metrics['max_drawdown']:.2%}",
+            f"Win Rate: {metrics['win_rate']:.2%}",
+            f"Avg Trade Return: {metrics['avg_trade_return']:.2%}",
+            f"Total Trades: {metrics['total_trades']}",
+            f"Initial Capital: ${metrics['initial_capital']:,.2f}",
+            f"Final Equity: ${metrics['final_equity']:,.2f}"
+        ]
+        return "\n".join(summary_lines)
+
+def calculate_metrics(
+    equity_curve: List[Dict[str, Any]], 
+    initial_capital: float = 100000.0
+) -> Dict[str, float]:
+    """
+    Standalone function to calculate metrics from an equity curve.
     
     Args:
-        snapshots: List of portfolio snapshots with timestamp and state
-        
+        equity_curve: List of equity points
+        initial_capital: Starting portfolio value
+    
     Returns:
-        Dict of metrics including:
-        - Total return
-        - Sharpe ratio
-        - Max drawdown
-        - Win rate
-        - Profit factor
-        etc.
+        Dictionary of performance metrics
     """
-    if not snapshots:
-        return {}
-
-    # Extract time series
-    equity = np.array([s["equity"] for s in snapshots])
-    returns = calculate_returns(snapshots)
+    collector = MetricsCollector(initial_capital)
+    for point in equity_curve:
+        collector.update_equity(point['timestamp'], point['equity'])
     
-    # Basic metrics
-    total_return = (equity[-1] - equity[0]) / equity[0]
-    
-    # Risk metrics
-    volatility = np.std(returns) * np.sqrt(252)  # Annualized
-    
-    # Sharpe ratio (assuming 0% risk-free rate for simplicity)
-    sharpe = np.mean(returns) * np.sqrt(252) / volatility if volatility > 0 else 0
-    
-    # Drawdown calculation
-    running_max = np.maximum.accumulate(equity)
-    drawdowns = (equity - running_max) / running_max
-    max_drawdown = np.min(drawdowns)
-    
-    # Trade metrics
-    trades = []
-    for s in snapshots:
-        if "trades" in s and len(s["trades"]) > 0:
-            trades.extend(s["trades"])
-    
-    if trades:
-        winning_trades = sum(1 for t in trades if t["realized_pnl"] > 0)
-        losing_trades = sum(1 for t in trades if t["realized_pnl"] < 0)
-        
-        win_rate = winning_trades / len(trades) if len(trades) > 0 else 0
-        
-        gross_profit = sum(t["realized_pnl"] for t in trades if t["realized_pnl"] > 0)
-        gross_loss = abs(sum(t["realized_pnl"] for t in trades if t["realized_pnl"] < 0))
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
-        
-        avg_trade = np.mean([t["realized_pnl"] for t in trades])
-        
-    else:
-        win_rate = 0
-        profit_factor = 0
-        avg_trade = 0
-    
-    # Calculate time-based metrics
-    timestamps = [datetime.fromisoformat(s["timestamp"].isoformat()) for s in snapshots]
-    trading_days = (timestamps[-1] - timestamps[0]).days / 365.25  # Convert to years
-    
-    if trading_days > 0:
-        annual_return = (1 + total_return) ** (1 / trading_days) - 1
-        annual_volatility = volatility
-        calmar_ratio = abs(annual_return / max_drawdown) if max_drawdown != 0 else 0
-    else:
-        annual_return = 0
-        annual_volatility = 0
-        calmar_ratio = 0
-    
-    return {
-        # Return metrics
-        "total_return": total_return,
-        "annual_return": annual_return,
-        "sharpe_ratio": sharpe,
-        
-        # Risk metrics
-        "volatility": volatility,
-        "max_drawdown": max_drawdown,
-        "calmar_ratio": calmar_ratio,
-        
-        # Trade metrics
-        "total_trades": len(trades),
-        "win_rate": win_rate,
-        "profit_factor": profit_factor,
-        "avg_trade": avg_trade,
-        
-        # Additional metrics
-        "final_equity": equity[-1],
-        "peak_equity": np.max(equity),
-        "trading_days": trading_days * 365.25,  # Convert back to days
-    }
-
-def calculate_rolling_metrics(
-    snapshots: List[Dict[str, Any]],
-    window: int = 252,  # Default to 1 year of trading days
-) -> Dict[str, List[float]]:
-    """
-    Calculate rolling performance metrics.
-    
-    Args:
-        snapshots: List of portfolio snapshots
-        window: Rolling window size in periods
-        
-    Returns:
-        Dict of rolling metric series
-    """
-    if len(snapshots) < window:
-        return {}
-
-    equity = np.array([s["equity"] for s in snapshots])
-    returns = calculate_returns(snapshots)
-    
-    # Initialize arrays
-    rolling_sharpe = np.zeros(len(snapshots) - window)
-    rolling_volatility = np.zeros(len(snapshots) - window)
-    rolling_returns = np.zeros(len(snapshots) - window)
-    
-    # Calculate rolling metrics
-    for i in range(len(snapshots) - window):
-        window_returns = returns[i:i+window]
-        
-        # Rolling Sharpe
-        vol = np.std(window_returns) * np.sqrt(252)
-        if vol > 0:
-            rolling_sharpe[i] = np.mean(window_returns) * np.sqrt(252) / vol
-            
-        # Rolling volatility
-        rolling_volatility[i] = vol
-        
-        # Rolling returns
-        rolling_returns[i] = (
-            equity[i + window] - equity[i]
-        ) / equity[i]
-    
-    return {
-        "rolling_sharpe": rolling_sharpe.tolist(),
-        "rolling_volatility": rolling_volatility.tolist(),
-        "rolling_returns": rolling_returns.tolist(),
-    }
+    return collector.calculate_metrics()
