@@ -1,16 +1,25 @@
 """
 Event bus implementation for event-driven market data processing.
 """
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Callable
 from datetime import datetime
 from .types import Event
+from pydantic import ValidationError
+
+class EventBusError(Exception):
+    """Base exception for event bus errors."""
+    pass
+
+class InvalidEventError(EventBusError):
+    """Raised when an event fails validation."""
+    pass
 
 class InMemoryEventBus:
     """
     In-memory event bus for storing and replaying events.
     
     Provides chronological event storage and retrieval with optional 
-    timestamp-based filtering.
+    timestamp-based filtering and advanced event management.
     """
     def __init__(self, events: Optional[List[Event]] = None):
         """
@@ -18,8 +27,16 @@ class InMemoryEventBus:
         
         Args:
             events: Optional initial list of events to populate the bus
+        
+        Raises:
+            InvalidEventError: If any event fails validation
         """
-        self._events = sorted(events or [], key=lambda e: e.timestamp)
+        try:
+            # Validate and sort events
+            validated_events = [Event(**event.dict()) for event in (events or [])]
+            self._events = sorted(validated_events, key=lambda e: e.timestamp)
+        except ValidationError as e:
+            raise InvalidEventError(f"Invalid event in event bus: {e}")
     
     def append(self, event: Event) -> None:
         """
@@ -27,27 +44,42 @@ class InMemoryEventBus:
         
         Args:
             event: Event to be added to the bus
+        
+        Raises:
+            InvalidEventError: If event validation fails
         """
-        self._events.append(event)
-        self._events.sort(key=lambda e: e.timestamp)
+        try:
+            validated_event = Event(**event.dict())
+            self._events.append(validated_event)
+            self._events.sort(key=lambda e: e.timestamp)
+        except ValidationError as e:
+            raise InvalidEventError(f"Invalid event: {e}")
     
     def replay(
         self, 
         start_ts: Optional[datetime] = None, 
         end_ts: Optional[datetime] = None,
-        symbol: Optional[str] = None
+        symbol: Optional[str] = None,
+        event_type: Optional[str] = None
     ) -> Iterable[Event]:
         """
-        Replay events within the specified time range and optional symbol filter.
+        Replay events with advanced filtering capabilities.
         
         Args:
             start_ts: Optional start timestamp for event replay
             end_ts: Optional end timestamp for event replay
             symbol: Optional symbol to filter events
+            event_type: Optional event type to filter events
         
         Yields:
             Events matching the specified criteria
+        
+        Raises:
+            EventBusError: If timestamp filtering is invalid
         """
+        if start_ts and end_ts and start_ts > end_ts:
+            raise EventBusError("Start timestamp cannot be after end timestamp")
+        
         for event in self._events:
             # Check timestamp range
             if start_ts and event.timestamp < start_ts:
@@ -56,31 +88,32 @@ class InMemoryEventBus:
                 break
             
             # Check symbol filter
-            if symbol and event.symbol != symbol:
+            if symbol and event.payload.get('symbol') != symbol:
+                continue
+            
+            # Check event type filter
+            if event_type and event.type != event_type:
                 continue
             
             yield event
     
-    def get_events(
+    def filter_events(
         self, 
-        event_type: Optional[str] = None,
-        symbol: Optional[str] = None
+        predicate: Optional[Callable[[Event], bool]] = None
     ) -> List[Event]:
         """
-        Retrieve events based on optional type and symbol filters.
+        Filter events based on a custom predicate function.
         
         Args:
-            event_type: Optional event type to filter
-            symbol: Optional symbol to filter
+            predicate: Optional function to filter events
         
         Returns:
             List of filtered events
         """
-        return [
-            event for event in self._events
-            if (not event_type or event.type == event_type) and
-               (not symbol or event.symbol == symbol)
-        ]
+        if predicate is None:
+            return self._events.copy()
+        
+        return [event for event in self._events if predicate(event)]
     
     def clear(self) -> None:
         """
