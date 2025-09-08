@@ -4,16 +4,19 @@ import os
 import logging
 from typing import Dict, Any, Optional, List, Union
 from datetime import datetime
+import pandas as pd
+import quantstats as qs
 
 logger = logging.getLogger(__name__)
 
 class MLflowTrackerConfig:
-    """Configuration for MLflow tracking."""
+    """Enhanced configuration for MLflow tracking."""
     def __init__(
         self, 
         tracking_uri: str = "http://localhost:5000", 
         experiment_name: str = "fxorcist-backtests",
-        artifact_dir: Optional[str] = None
+        artifact_dir: Optional[str] = None,
+        generate_quantstats: bool = True
     ):
         """
         Initialize MLflow tracker configuration.
@@ -21,14 +24,17 @@ class MLflowTrackerConfig:
         :param tracking_uri: URI for MLflow tracking server
         :param experiment_name: Name of the experiment
         :param artifact_dir: Directory to store artifacts
+        :param generate_quantstats: Auto-generate QuantStats reports
         """
         self.tracking_uri = tracking_uri
         self.experiment_name = experiment_name
         self.artifact_dir = artifact_dir or os.path.join(os.getcwd(), "mlflow_artifacts")
+        self.generate_quantstats = generate_quantstats
+        
         os.makedirs(self.artifact_dir, exist_ok=True)
 
 class MLflowTracker:
-    """Advanced MLflow experiment tracking for backtests."""
+    """Advanced MLflow experiment tracking with QuantStats integration."""
     
     def __init__(
         self, 
@@ -60,16 +66,18 @@ class MLflowTracker:
         params: Dict[str, Any], 
         metrics: Dict[str, float], 
         config: Dict[str, Any], 
+        returns_series: Optional[pd.Series] = None,
         equity_curve: Optional[List[tuple]] = None,
         tags: Optional[Dict[str, str]] = None
     ):
         """
-        Log a comprehensive trial to MLflow.
+        Log a comprehensive trial to MLflow with optional QuantStats report.
         
         :param trial_id: Unique identifier for the trial
         :param params: Hyperparameters used in the trial
         :param metrics: Performance metrics from the trial
         :param config: Full configuration used
+        :param returns_series: Optional returns series for QuantStats
         :param equity_curve: Optional equity curve data
         :param tags: Optional tags for the run
         """
@@ -101,6 +109,19 @@ class MLflowTracker:
                         mlflow.log_artifact(artifact_path)
                     except Exception as artifact_error:
                         logger.warning(f"Failed to log equity curve artifact: {artifact_error}")
+                
+                # Generate QuantStats report if returns series is provided
+                if self.config.generate_quantstats and returns_series is not None:
+                    try:
+                        # Generate QuantStats HTML report
+                        report_path = os.path.join(
+                            self.config.artifact_dir, 
+                            f"quantstats_report_{trial_id}_{datetime.now().isoformat()}.html"
+                        )
+                        qs.reports.html(returns_series, output=report_path, title=f'Strategy Tearsheet - Trial {trial_id}')
+                        mlflow.log_artifact(report_path)
+                    except Exception as qs_error:
+                        logger.warning(f"Failed to generate QuantStats report: {qs_error}")
                 
                 # Log source code version
                 mlflow.log_param("git_commit", _get_git_commit())
