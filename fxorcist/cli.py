@@ -7,13 +7,12 @@ from typing import Optional
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
-import yaml
 import json
 
-from fxorcist.data.loader import load_symbol, list_available_symbols
+from fxorcist.config import AppConfig, load_config
+from fxorcist.data.loader import load_symbol
 from fxorcist.ml.optuna_runner import run_optuna
 from fxorcist.pipeline.backtest import run_backtest
-from fxorcist.utils.config import load_config
 
 app = typer.Typer(
     help="FXorcist — Event-Driven Forex Backtesting & Optimization",
@@ -30,10 +29,10 @@ def version_callback(value: bool):
 
 @app.callback()
 def main(
-    config: Path = typer.Option(
+    config_path: Optional[Path] = typer.Option(
         None,
         "--config", "-c",
-        help="Path to YAML config file",
+        help="Path to configuration file",
         exists=True,
         file_okay=True,
         dir_okay=False,
@@ -56,8 +55,11 @@ def main(
 
     Use --help with any command for detailed usage information.
     """
-    # Store common options in state
-    app.state.config = load_config(config) if config else {}
+    # Load configuration with Pydantic validation
+    cfg: AppConfig = load_config(config_path) if config_path else AppConfig()
+    
+    # Store configuration and output mode in app state
+    app.state.config = cfg
     app.state.json_output = json_output
 
 @app.command()
