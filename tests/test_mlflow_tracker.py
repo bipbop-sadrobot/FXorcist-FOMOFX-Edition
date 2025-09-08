@@ -1,114 +1,109 @@
 import pytest
-import os
-import tempfile
+import pandas as pd
+import numpy as np
 import mlflow
-from fxorcist.tracking.mlflow_tracker import MLflowTracker, MLflowTrackerConfig
+from fxorcist.tracking.mlflow_tracker import MLflowTracker
 
 @pytest.fixture
 def mlflow_tracker():
-    """
-    Fixture to create an MLflow tracker with a temporary tracking URI.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tracking_uri = f"file://{tmpdir}"
-        config = MLflowTrackerConfig(
-            tracking_uri=tracking_uri,
-            experiment_name="test_fxorcist_backtests",
-            artifact_dir=tmpdir
-        )
-        tracker = MLflowTracker(config=config)
-        yield tracker
+    """Create a MLflow tracker for testing."""
+    return MLflowTracker(experiment_name="test_experiment")
 
-def test_mlflow_tracker_initialization(mlflow_tracker):
-    """
-    Test MLflow tracker initialization.
-    """
-    assert mlflow_tracker.config is not None
-    assert mlflow_tracker.config.experiment_name == "test_fxorcist_backtests"
+def test_log_trial(mlflow_tracker):
+    """Test logging a complete trial."""
+    # Simulate returns
+    returns = pd.Series(np.random.normal(0.001, 0.05, 100))
+    returns.index = pd.date_range(start='2024-01-01', periods=len(returns))
 
-def test_mlflow_tracker_log_trial(mlflow_tracker):
-    """
-    Test logging a trial to MLflow.
-    """
-    trial_params = {
-        "window": 14,
-        "threshold": 70
-    }
-    
-    metrics = {
-        "sharpe": 1.5,
-        "return": 0.2,
-        "max_drawdown": -0.1
-    }
-    
-    config = {
-        "commission": 0.001,
-        "symbol": "EURUSD"
-    }
-    
-    equity_curve = [(0, 10000), (1, 10500), (2, 11000)]
-    
-    mlflow_tracker.log_trial(
+    # Log trial
+    run_id = mlflow_tracker.log_trial(
         trial_id="test_trial_1",
-        params=trial_params,
-        metrics=metrics,
-        config=config,
-        equity_curve=equity_curve,
-        tags={"strategy": "RSI"}
+        params={"window": 14, "threshold": 0.5},
+        metrics={"sharpe": 1.2, "max_drawdown": -0.15},
+        config={"strategy": "test_strategy"},
+        returns=returns
     )
-    
-    # Verify artifact was created
-    artifact_files = os.listdir(mlflow_tracker.config.artifact_dir)
-    assert any("equity_curve" in f for f in artifact_files)
 
-def test_mlflow_tracker_error_handling(mlflow_tracker):
-    """
-    Test MLflow tracker error handling.
-    """
-    with pytest.raises(TypeError):
+    # Verify run was logged
+    assert run_id is not None
+    
+    # Retrieve run and verify details
+    client = mlflow.tracking.MlflowClient()
+    run = client.get_run(run_id)
+    
+    assert run.data.params["window"] == "14"
+    assert run.data.params["threshold"] == "0.5"
+    assert "sharpe" in run.data.metrics
+
+def test_get_best_run(mlflow_tracker):
+    """Test retrieving the best run."""
+    # Log multiple trials
+    for i in range(5):
+        returns = pd.Series(np.random.normal(0.001 * (i+1), 0.05, 100))
+        returns.index = pd.date_range(start='2024-01-01', periods=len(returns))
+        
         mlflow_tracker.log_trial(
-            trial_id=None,  # Invalid trial_id
-            params={},
-            metrics={},
-            config={}
+            trial_id=f"trial_{i}",
+            params={"window": str(14 + i)},
+            metrics={"sharpe": 1.0 + 0.1 * i},
+            config={"strategy": "test_strategy"},
+            returns=returns
         )
 
-def test_mlflow_tracker_complex_config():
-    """
-    Test MLflow tracker with complex configuration.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        config = MLflowTrackerConfig(
-            tracking_uri=f"file://{tmpdir}",
-            experiment_name="complex_test",
-            artifact_dir=tmpdir
-        )
-        
-        tracker = MLflowTracker(config=config)
-        
-        assert tracker.config.experiment_name == "complex_test"
-        assert tracker.config.artifact_dir == tmpdir
+    # Get best run
+    best_run = mlflow_tracker.get_best_run(metric="sharpe", mode="max")
+    
+    assert "run_id" in best_run
+    assert "params" in best_run
+    assert "metrics" in best_run
 
-def test_mlflow_tracker_git_commit_tracking(mlflow_tracker):
-    """
-    Test that git commit is logged with each trial.
-    """
-    trial_params = {"window": 14}
-    metrics = {"sharpe": 1.5}
-    config = {"commission": 0.001}
+def test_compare_runs(mlflow_tracker):
+    """Test comparing multiple runs."""
+    # Log multiple trials
+    for i in range(5):
+        returns = pd.Series(np.random.normal(0.001 * (i+1), 0.05, 100))
+        returns.index = pd.date_range(start='2024-01-01', periods=len(returns))
+        
+        mlflow_tracker.log_trial(
+            trial_id=f"trial_{i}",
+            params={"window": str(14 + i)},
+            metrics={
+                "sharpe": 1.0 + 0.1 * i, 
+                "max_drawdown": -0.1 * i,
+                "cagr": 0.05 * (i+1)
+            },
+            config={"strategy": "test_strategy"},
+            returns=returns
+        )
+
+    # Compare runs
+    comparison_df = mlflow_tracker.compare_runs()
     
-    mlflow_tracker.log_trial(
-        trial_id="git_commit_test",
-        params=trial_params,
-        metrics=metrics,
-        config=config
+    assert not comparison_df.empty
+    assert "sharpe" in comparison_df.columns
+    assert "max_drawdown" in comparison_df.columns
+    assert "cagr" in comparison_df.columns
+
+def test_quantstats_report_generation(mlflow_tracker):
+    """Test QuantStats report generation."""
+    # Simulate returns
+    returns = pd.Series(np.random.normal(0.001, 0.05, 100))
+    returns.index = pd.date_range(start='2024-01-01', periods=len(returns))
+
+    # Log trial with returns
+    run_id = mlflow_tracker.log_trial(
+        trial_id="quantstats_test",
+        params={"window": 14},
+        metrics={"sharpe": 1.2},
+        config={"strategy": "test_strategy"},
+        returns=returns
     )
+
+    # Retrieve run and verify QuantStats metrics
+    client = mlflow.tracking.MlflowClient()
+    run = client.get_run(run_id)
     
-    # Retrieve the latest run
-    client = mlflow.tracking.MlflowClient(mlflow_tracker.config.tracking_uri)
-    runs = client.search_runs(
-        experiment_names=["test_fxorcist_backtests"]
-    )
-    
-    assert len(runs) > 0
-    assert "git_commit" in runs[0].data.params
+    # Check for key QuantStats metrics
+    assert "cagr" in run.data.metrics
+    assert "max_drawdown" in run.data.metrics
+    assert "sharpe" in run.data.metrics
