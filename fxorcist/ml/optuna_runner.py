@@ -1,75 +1,112 @@
-"""
-Optuna runner:
-- TPESampler(seed)
-- MedianPruner for speed
-- Optional MLflow logging (safe if mlflow not installed)
-- Save trial artifacts (best params yaml, equity plot) to artifacts/
-- Support multi-objective placeholder (can be expanded)
-"""
-from __future__ import annotations
 import optuna
-from optuna.samplers import TPESampler
-from optuna.pruners import MedianPruner
-import yaml
-from pathlib import Path
-from typing import Dict, Any, Optional
+import numpy as np
+from typing import Dict, Any
 import logging
-import matplotlib.pyplot as plt
-import io
-import base64
 
-from fxorcist.pipeline.vectorized_backtest import sma_strategy_returns, simple_metrics
+from fxorcist.config import Settings
+from fxorcist.backtest.engine import run_backtest
+from fxorcist.distributed.dask_runner import DaskRunner
+from fxorcist.tracking.mlflow_tracker import MLflowTracker
 
 logger = logging.getLogger(__name__)
 
-def _objective(trial: optuna.Trial, df):
-    fast = trial.suggest_int("fast", 5, 40)
-    slow = trial.suggest_int("slow", 50, 200)
-    if slow <= fast:
-        return -1e9
-    rets = sma_strategy_returns(df, fast=fast, slow=slow)
-    metrics = simple_metrics(rets)
-    trial.set_user_attr("n", len(rets))
-    return metrics.get("sharpe", -1e9)
+def objective(trial: optuna.Trial, config: Settings) -> float:
+    """
+    Objective function for Optuna hyperparameter optimization.
 
-def run_optuna(df, n_trials: int = 50, seed: int = 42, out_path: str = "artifacts/best_params.yaml", storage: Optional[str] = None, use_mlflow: bool = False) -> Dict[str, Any]:
-    sampler = TPESampler(seed=seed)
-    pruner = MedianPruner()
-    study = optuna.create_study(direction="maximize", sampler=sampler, pruner=pruner, storage=storage, load_if_exists=True)
-    mlflow = None
-    if use_mlflow:
-        try:
-            import mlflow as _ml
-            mlflow = _ml
-            mlflow.start_run(run_name=f"optuna_sma_{seed}")
-        except Exception as e:
-            logger.warning("MLflow import failed; continuing without MLflow: %s", e)
-            mlflow = None
+    Args:
+        trial (optuna.Trial): Optuna trial object
+        config (Settings): Global configuration
 
-    study.optimize(lambda t: _objective(t, df), n_trials=n_trials, show_progress_bar=True)
-    best = study.best_params
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as fh:
-        yaml.safe_dump(best, fh)
-    if mlflow:
-        try:
-            mlflow.log_params(best)
-            mlflow.log_metric("best_sharpe", study.best_value)
-            mlflow.end_run()
-        except Exception as e:
-            logger.warning("MLflow logging failed: %s", e)
+    Returns:
+        float: Negative Sharpe ratio (for minimization)
+    """
+    params = {
+        "rsi_window": trial.suggest_int("rsi_window", 5, 30),
+        "rsi_overbought": trial.suggest_int("rsi_overbought", 60, 80),
+        "rsi_oversold": trial.suggest_int("rsi_oversold", 20, 40),
+        "commission_pct": trial.suggest_float("commission_pct", 0.00001, 0.0001),
+    }
 
-    try:
-        best_rets = sma_strategy_returns(df, fast=best['fast'], slow=best['slow'])
-        fig, ax = plt.subplots()
-        (1 + best_rets).cumprod().plot(ax=ax)
-        ax.set_title("Equity curve (best)")
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png', bbox_inches='tight')
-        buf.seek(0)
-        out_file = Path(out_path).with_suffix('.png')
-        out_file.write_bytes(buf.getvalue())
-    except Exception as e:
-        logger.warning("Failed to write equity plot: %s", e)
+    # Set seed for reproducibility
+    seed = trial.number
+    np.random.seed(seed)
 
-    return {"study": study, "best_params": best}
+    # Run backtest
+    result = run_backtest(
+        strategy_name="rsi", 
+        config=config, 
+        params_file=None, 
+        params=params
+    )
+
+    # Log to MLflow
+    tracker = MLflowTracker()
+    tracker.log_trial(
+        trial_id=str(trial.number),
+        params=params,
+        metrics=result.get("metrics", {}),
+        config=config.model_dump(),
+        returns=result.get("returns", None)
+    )
+
+    return -result["metrics"].get("sharpe", 0)
+
+def run_optuna(
+    config: Settings, 
+    n_trials: int = 100, 
+    distributed: bool = False,
+    n_workers: int = 4
+) -> optuna.Study:
+    """
+    Run Optuna hyperparameter optimization.
+
+    Args:
+        config (Settings): Global configuration
+        n_trials (int): Number of trials to run
+        distributed (bool): Whether to use distributed computing
+        n_workers (int): Number of workers for distributed optimization
+
+    Returns:
+        optuna.Study: Optimization study results
+    """
+    if distributed:
+        # Distributed optimization using Dask
+        runner = DaskRunner(n_workers=n_workers)
+
+        # Generate trial configs
+        trial_configs = []
+        for i in range(n_trials):
+            params = {
+                "rsi_window": np.random.randint(5, 30),
+                "rsi_overbought": np.random.randint(60, 80),
+                "rsi_oversold": np.random.randint(20, 40),
+                "commission_pct": np.random.uniform(0.00001, 0.0001)
+            }
+            trial_configs.append(params)
+
+        # Run distributed trials
+        results = runner.run_trials(
+            strategy_name="rsi", 
+            trial_configs=trial_configs, 
+            config=config
+        )
+        runner.close()
+
+        # Create study from results
+        study = optuna.create_study(direction="minimize")
+        for result in results:
+            if "error" not in result:
+                study.add_trial(optuna.trial.create_trial(
+                    params=result["params"],
+                    value=-result["metrics"].get("sharpe", 0.0),
+                    user_attrs={"seed": result.get("seed", 0)}
+                ))
+        
+        return study
+
+    else:
+        # Standard Optuna optimization
+        study = optuna.create_study(direction="minimize")
+        study.optimize(lambda trial: objective(trial, config), n_trials=n_trials)
+        return study
