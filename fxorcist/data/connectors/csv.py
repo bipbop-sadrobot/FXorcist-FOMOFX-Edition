@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
 
-from fxorcist.data.connectors.base import DataConnector
+from .base import DataConnector
 from fxorcist.events.event_bus import Event
 
 class CSVConnector(DataConnector):
@@ -16,7 +16,6 @@ class CSVConnector(DataConnector):
         start: datetime,
         end: Optional[datetime] = None
     ) -> List[Event]:
-        """Load from {symbol}.parquet or {symbol}.csv."""
         parquet_path = self.data_dir / f"{symbol}.parquet"
         csv_path = self.data_dir / f"{symbol}.csv"
 
@@ -27,22 +26,29 @@ class CSVConnector(DataConnector):
         else:
             raise FileNotFoundError(f"No data for {symbol} in {self.data_dir}")
 
+        # Ensure 'timestamp' column exists
+        if 'timestamp' not in df.columns:
+            raise ValueError("CSV must have 'timestamp' column")
+
         # Filter by date
         mask = df["timestamp"] >= start
         if end:
             mask &= df["timestamp"] <= end
-        df = df[mask]
+        df = df[mask].sort_values("timestamp")
 
         events = []
         for _, row in df.iterrows():
+            payload = row.to_dict()
+            # Ensure bid/ask or mid exists
+            if "mid" not in payload:
+                if "bid" in payload and "ask" in payload:
+                    payload["mid"] = (payload["bid"] + payload["ask"]) / 2
+                else:
+                    raise ValueError("Row must have 'mid' or both 'bid' and 'ask'")
+
             events.append(Event(
                 timestamp=row["timestamp"],
                 type="tick",
-                payload={
-                    "symbol": symbol,
-                    "bid": float(row["bid"]),
-                    "ask": float(row["ask"]),
-                    "mid": float(row["mid"]) if "mid" in row else (row["bid"] + row["ask"]) / 2
-                }
+                payload=payload
             ))
         return events
