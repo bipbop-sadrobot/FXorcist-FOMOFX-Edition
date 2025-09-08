@@ -64,24 +64,23 @@ def load_market_data(symbol: str, start_date: str, end_date: str):
         Event objects for the market data
     """
     # Load data from storage/API and convert to events
-    # This is a placeholder, the actual implementation will depend on the data source
+    df = load_symbol(symbol, start_date=start_date, end_date=end_date)
     
-    now = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
-    
-    while now <= end:
+    for index, row in df.iterrows():
+        # Create tick event
         yield create_tick_event(
-            timestamp=now,
+            timestamp=index,
             symbol=symbol,
-            bid=1.1000,
-            ask=1.1001,
+            bid=row['close'],
+            ask=row['close'] + 0.0001,  # Small spread
         )
+        
+        # Create bar event
         yield create_bar_event(
-            timestamp=now,
+            timestamp=index,
             symbol=symbol,
-            open_price=1.1000,
-            high=1.1002,
-            low=1.0999,
-            close=1.1001,
+            open_price=row['open'],
+            high=row['high'],
+            low=row['low'],
+            close=row['close'],
         )
-        now += timedelta(minutes=1)
