@@ -12,7 +12,7 @@ import json
 
 from fxorcist.data.loader import load_symbol, list_available_symbols
 from fxorcist.ml.optuna_runner import run_optuna
-from fxorcist.backtest.engine import run_backtest
+from fxorcist.pipeline.backtest import run_backtest
 from fxorcist.utils.config import load_config
 
 app = typer.Typer(
