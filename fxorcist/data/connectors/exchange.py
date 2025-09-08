@@ -1,44 +1,46 @@
-import ccxt.async_support as ccxt
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional
 
-from fxorcist.data.connectors.base import DataConnector
+from .base import DataConnector
 from fxorcist.events.event_bus import Event
 
 class ExchangeConnector(DataConnector):
-    def __init__(self, exchange_id: str = "kraken"):
-        self.exchange = getattr(ccxt, exchange_id)()
-
+    """
+    Placeholder for Exchange Data Connector.
+    
+    Future implementation will support live market data retrieval
+    from various cryptocurrency and forex exchanges.
+    """
+    
+    def __init__(self, api_key: Optional[str] = None, api_secret: Optional[str] = None):
+        """
+        Initialize ExchangeConnector with optional authentication.
+        
+        Args:
+            api_key: Optional API key for exchange authentication
+            api_secret: Optional API secret for exchange authentication
+        """
+        self.api_key = api_key
+        self.api_secret = api_secret
+    
     async def fetch(
         self,
         symbol: str,
         start: datetime,
         end: Optional[datetime] = None
     ) -> List[Event]:
-        """Fetch OHLCV or tick data from exchange."""
-        # Convert datetime to ms timestamp
-        since = int(start.replace(tzinfo=timezone.utc).timestamp() * 1000)
-        limit = 1000  # max per request
-
-        ohlcv = await self.exchange.fetch_ohlcv(symbol, "1m", since=since, limit=limit)
-        events = []
-        for entry in ohlcv:
-            timestamp = datetime.fromtimestamp(entry[0] / 1000, tz=timezone.utc)
-            if end and timestamp > end:
-                break
-            events.append(Event(
-                timestamp=timestamp,
-                type="bar",
-                payload={
-                    "symbol": symbol,
-                    "open": entry[1],
-                    "high": entry[2],
-                    "low": entry[3],
-                    "close": entry[4],
-                    "volume": entry[5]
-                }
-            ))
-        return events
-
-    async def close(self):
-        await self.exchange.close()
+        """
+        Placeholder method for fetching live market data.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'BTCUSD')
+            start: Start datetime for data retrieval
+            end: Optional end datetime for data retrieval
+        
+        Raises:
+            NotImplementedError: This is a stub implementation
+        """
+        raise NotImplementedError(
+            "ExchangeConnector is a placeholder. "
+            "Implement specific exchange API integration."
+        )
