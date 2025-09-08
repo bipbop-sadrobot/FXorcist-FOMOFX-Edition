@@ -69,14 +69,26 @@ class CircuitBreaker:
         return self._state == CircuitState.OPEN
     
     def _should_reset(self) -> bool:
-        """Check if circuit should attempt reset."""
+        """Check if circuit should attempt reset.
+        
+        Returns:
+            bool: True if enough time has passed since last failure
+        """
         if not self._last_failure_time:
             return False
         
         elapsed = (datetime.utcnow() - self._last_failure_time).total_seconds()
-        return elapsed >= self.reset_timeout
+        should_reset = elapsed >= self.reset_timeout
+        
+        if should_reset:
+            logger.debug(
+                f"Circuit breaker {self.name} ready for reset after "
+                f"{elapsed:.1f}s (threshold: {self.reset_timeout}s)"
+            )
+        
+        return should_reset
     
-    async def _schedule_reset(self):
+    async def _schedule_reset(self) -> None:
         """Schedule automatic reset attempt."""
         if self._reset_timer:
             self._reset_timer.cancel()
@@ -91,14 +103,14 @@ class CircuitBreaker:
         finally:
             self._reset_timer = None
     
-    async def attempt_reset(self):
+    async def attempt_reset(self) -> None:
         """Attempt to reset circuit to half-open state."""
         if self._state == CircuitState.OPEN and self._should_reset():
             logger.info(f"Circuit breaker {self.name} attempting reset")
             self._state = CircuitState.HALF_OPEN
             self._failure_count = 0
     
-    def record_failure(self):
+    def record_failure(self) -> None:
         """Record a failure and potentially open circuit."""
         self._failure_count += 1
         self._last_failure_time = datetime.utcnow()
@@ -119,18 +131,30 @@ class CircuitBreaker:
             self._state = CircuitState.OPEN
             asyncio.create_task(self._schedule_reset())
     
-    def record_success(self):
+    def record_success(self) -> None:
         """Record success and potentially close circuit."""
+        prev_state = self._state
+        prev_failures = self._failure_count
+        
         self._failure_count = 0
         
         if self._state == CircuitState.HALF_OPEN:
-            logger.info(f"Circuit breaker {self.name} closing after successful test")
+            logger.info(
+                f"Circuit breaker {self.name} closing after successful test "
+                f"(previous failures: {prev_failures})"
+            )
             self._state = CircuitState.CLOSED
             self._last_failure_time = None
             
             if self._reset_timer:
                 self._reset_timer.cancel()
                 self._reset_timer = None
+        
+        if prev_state != self._state:
+            logger.info(
+                f"Circuit breaker {self.name} state transition: "
+                f"{prev_state.value} -> {self._state.value}"
+            )
     
     @asynccontextmanager
     async def __aenter__(self):
@@ -151,6 +175,11 @@ class CircuitBreaker:
         else:
             self.record_success()
     
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(
+        self,
+        exc_type: Optional[type],
+        exc_val: Optional[Exception],
+        exc_tb: Optional[Any]
+    ) -> None:
         """Exit async context."""
         pass
