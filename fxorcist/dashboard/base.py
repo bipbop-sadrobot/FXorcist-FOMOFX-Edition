@@ -138,17 +138,47 @@ class DashboardModule(TradingModule):
             self.error_count += 1
             self.logger.error(f"Error handling event: {e}", exc_info=True)
             
-            # Update metrics
-            DASHBOARD_ERROR_COUNTER.labels(
-                module=self.name,
-                event_type=event.type.value
-            ).inc()
-            
             if self.error_count >= self.max_errors:
                 self.logger.critical("Maximum error count exceeded")
                 await self.stop()
                 raise DashboardError("Maximum error count exceeded")
-    
+    async def _handle_circuit_breaker_error(self, event: Event) -> None:
+        """Handle circuit breaker errors.
+        
+        Args:
+            event: Event that triggered the circuit breaker
+        """
+        try:
+            # Log the error
+            self.logger.warning(
+                f"Circuit breaker prevented processing of {event.type} event "
+                f"for module {self.name}"
+            )
+            
+            # Store event for retry if needed
+            cache_key = f"retry:{self.name}:{event.event_id}"
+            await cache_instance.set(
+                cache_key,
+                event.data,
+                ttl=300  # 5 minutes
+            )
+            
+            # Notify subscribers of failure
+            message = WebSocketMessage(
+                type="service_degraded",
+                data={
+                    "module": self.name,
+                    "event_type": event.type.value,
+                    "message": "Service temporarily unavailable"
+                }
+            )
+            await connection_manager.broadcast(message, "system_status")
+            
+        except Exception as e:
+            self.logger.error(
+                f"Error handling circuit breaker failure: {e}",
+                exc_info=True
+            )
     async def _handle_trade_event(self, event: Event):
         """Handle trade events.
         
