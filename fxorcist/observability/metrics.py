@@ -13,12 +13,13 @@ from typing import Optional, Dict, Any
 logger = logging.getLogger(__name__)
 
 class PrometheusMetricsConfig:
-    """Configuration for Prometheus metrics."""
+    """Enhanced configuration for Prometheus metrics."""
     def __init__(
         self, 
         port: int = 9090, 
         namespace: str = 'fxorcist',
-        subsystem: str = 'backtest'
+        subsystem: str = 'backtest',
+        financial_metrics: bool = True
     ):
         """
         Initialize Prometheus metrics configuration.
@@ -26,13 +27,15 @@ class PrometheusMetricsConfig:
         :param port: Port to expose metrics on
         :param namespace: Metrics namespace
         :param subsystem: Metrics subsystem
+        :param financial_metrics: Enable additional financial-specific metrics
         """
         self.port = port
         self.namespace = namespace
         self.subsystem = subsystem
+        self.financial_metrics = financial_metrics
 
 class PrometheusMetrics:
-    """Advanced Prometheus metrics tracking for backtests."""
+    """Advanced Prometheus metrics tracking with financial insights."""
     
     def __init__(
         self, 
@@ -60,6 +63,7 @@ class PrometheusMetrics:
         """Set up Prometheus metrics with namespace and subsystem."""
         namespace, subsystem = self.config.namespace, self.config.subsystem
         
+        # Standard metrics
         self.BACKTEST_COUNT = Counter(
             'backtest_total', 
             'Total backtests run', 
@@ -95,13 +99,43 @@ class PrometheusMetrics:
             subsystem=subsystem,
             registry=self.registry
         )
+        
+        # Financial-specific metrics (if enabled)
+        if self.config.financial_metrics:
+            self.STRATEGY_SHARPE_RATIO = Gauge(
+                'strategy_sharpe_ratio', 
+                'Sharpe ratio for trading strategies', 
+                ['strategy'], 
+                namespace=namespace, 
+                subsystem=subsystem,
+                registry=self.registry
+            )
+            
+            self.STRATEGY_MAX_DRAWDOWN = Gauge(
+                'strategy_max_drawdown', 
+                'Maximum drawdown for trading strategies', 
+                ['strategy'], 
+                namespace=namespace, 
+                subsystem=subsystem,
+                registry=self.registry
+            )
+            
+            self.STRATEGY_WIN_RATE = Gauge(
+                'strategy_win_rate', 
+                'Win rate for trading strategies', 
+                ['strategy'], 
+                namespace=namespace, 
+                subsystem=subsystem,
+                registry=self.registry
+            )
 
     def observe_backtest(
         self, 
         strategy: str, 
         duration: float, 
         success: bool = True, 
-        error_type: Optional[str] = None
+        error_type: Optional[str] = None,
+        financial_metrics: Optional[Dict[str, float]] = None
     ):
         """
         Record metrics for a backtest trial.
@@ -110,6 +144,7 @@ class PrometheusMetrics:
         :param duration: Time taken for the backtest
         :param success: Whether the backtest completed successfully
         :param error_type: Type of error if the backtest failed
+        :param financial_metrics: Optional financial performance metrics
         """
         try:
             self.BACKTEST_COUNT.labels(strategy=strategy).inc()
@@ -120,6 +155,23 @@ class PrometheusMetrics:
                     strategy=strategy, 
                     error_type=error_type or 'unknown'
                 ).inc()
+            
+            # Log financial metrics if provided and enabled
+            if self.config.financial_metrics and financial_metrics:
+                if 'sharpe_ratio' in financial_metrics:
+                    self.STRATEGY_SHARPE_RATIO.labels(strategy=strategy).set(
+                        financial_metrics['sharpe_ratio']
+                    )
+                
+                if 'max_drawdown' in financial_metrics:
+                    self.STRATEGY_MAX_DRAWDOWN.labels(strategy=strategy).set(
+                        financial_metrics['max_drawdown']
+                    )
+                
+                if 'win_rate' in financial_metrics:
+                    self.STRATEGY_WIN_RATE.labels(strategy=strategy).set(
+                        financial_metrics['win_rate']
+                    )
         except Exception as e:
             logger.error(f"Failed to record backtest metrics: {e}")
 
