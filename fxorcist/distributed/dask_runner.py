@@ -1,191 +1,153 @@
 from typing import List, Dict, Any, Optional
-import dask
-from dask.distributed import Client, LocalCluster, Future, progress
+from dask.distributed import Client, LocalCluster, progress
 import logging
-import traceback
-import psutil
-import multiprocessing
-from functools import partial
-import time
+import numpy as np
+import asyncio
+
+from fxorcist.config import Settings
+from fxorcist.backtest.engine import run_backtest
 
 logger = logging.getLogger(__name__)
 
-class DaskRunnerConfig:
-    """Enhanced configuration for Dask distributed runner."""
+class DaskRunner:
+    """Run backtests in parallel using Dask."""
+
     def __init__(
         self, 
-        n_workers: Optional[int] = None, 
-        threads_per_worker: int = 1,
-        memory_limit: Optional[str] = None,
-        dashboard_address: Optional[str] = None,
-        adaptive_scaling: bool = True,
-        log_resource_usage: bool = True
+        n_workers: int = 4, 
+        threads_per_worker: int = 1, 
+        memory_limit: str = '2GB'
     ):
         """
-        Initialize Dask runner configuration with advanced options.
-        
-        :param n_workers: Number of workers. Defaults to CPU count if not specified.
-        :param threads_per_worker: Threads per worker
-        :param memory_limit: Memory limit per worker (e.g., '4GB')
-        :param dashboard_address: Custom dashboard address
-        :param adaptive_scaling: Enable dynamic worker scaling
-        :param log_resource_usage: Log CPU/memory usage per trial
+        Initialize Dask cluster for distributed backtesting.
+
+        Args:
+            n_workers (int): Number of worker processes
+            threads_per_worker (int): Number of threads per worker
+            memory_limit (str): Memory limit per worker
         """
-        self.n_workers = n_workers or multiprocessing.cpu_count()
+        self.n_workers = n_workers
         self.threads_per_worker = threads_per_worker
         self.memory_limit = memory_limit
-        self.dashboard_address = dashboard_address
-        self.adaptive_scaling = adaptive_scaling
-        self.log_resource_usage = log_resource_usage
+        self.cluster = None
+        self.client = None
 
-class DaskRunner:
-    """Enhanced distributed backtest runner with advanced features."""
-    
-    def __init__(
-        self, 
-        config: Optional[DaskRunnerConfig] = None,
-        logging_level: int = logging.INFO
-    ):
-        """
-        Initialize Dask cluster with enhanced configuration.
-        
-        :param config: Dask runner configuration
-        :param logging_level: Logging level for the runner
-        """
-        logger.setLevel(logging_level)
-        
-        # Use default config if not provided
-        self.config = config or DaskRunnerConfig()
-        
-        # Initialize cluster
+    def start(self):
+        """Start Dask cluster."""
         try:
             self.cluster = LocalCluster(
-                n_workers=self.config.n_workers,
-                threads_per_worker=self.config.threads_per_worker,
-                processes=True,  # Isolate memory
-                memory_limit=self.config.memory_limit,
-                dashboard_address=self.config.dashboard_address,
-                # Enable adaptive scaling if configured
-                scheduler_port=0,  # Dynamically assign port
-                silence_logs=logging.WARNING
+                n_workers=self.n_workers,
+                threads_per_worker=self.threads_per_worker,
+                processes=True,
+                memory_limit=self.memory_limit
             )
             self.client = Client(self.cluster)
-            logger.info(f"Dask cluster started: {self.client.dashboard_link}")
+            logger.info(f"Dask cluster started. Dashboard: {self.client.dashboard_link}")
         except Exception as e:
-            logger.error(f"Failed to initialize Dask cluster: {e}")
+            logger.error(f"Failed to start Dask cluster: {e}")
             raise
 
     def run_trials(
         self, 
+        strategy_name: str, 
         trial_configs: List[Dict[str, Any]], 
-        max_retries: int = 1
+        config: Settings
     ) -> List[Dict[str, Any]]:
         """
-        Run backtests in parallel with advanced features.
-        
-        :param trial_configs: List of trial configurations
-        :param max_retries: Maximum number of retries for failed trials
-        :return: List of trial results with optional resource usage
+        Run multiple backtest trials in parallel.
+
+        Args:
+            strategy_name (str): Name of the trading strategy
+            trial_configs (List[Dict]): List of parameter configurations
+            config (Settings): Global configuration settings
+
+        Returns:
+            List[Dict]: Results of each trial
         """
+        if not self.client:
+            self.start()
+
         # Submit all trials
         futures = []
-        for config in trial_configs:
+        for trial_config in trial_configs:
             future = self.client.submit(
-                _run_backtest_with_retry_and_logging,
-                config["strategy"],
-                config["params"],
-                config["config_dict"],
-                max_retries=max_retries,
-                log_resources=self.config.log_resource_usage
+                _run_backtest_task,
+                strategy_name,
+                trial_config,
+                config.model_dump(),
+                pure=False  # Don't cache results
             )
             futures.append(future)
 
-        # Show progress bar
+        # Show progress
         progress(futures)
 
         # Gather results
         results = []
-        for future in futures:
+        for i, future in enumerate(futures):
             try:
                 result = future.result()
                 results.append(result)
+                logger.info(f"Trial {i+1}/{len(futures)} completed")
             except Exception as e:
-                logger.error(f"Trial failed after all retries: {e}")
+                logger.error(f"Trial {i+1} failed: {e}")
                 results.append({
-                    "error": str(e),
-                    "traceback": traceback.format_exc()
+                    "error": str(e), 
+                    "trial_id": i, 
+                    "params": trial_configs[i]
                 })
 
         return results
 
     def close(self):
-        """Gracefully close Dask client and cluster."""
-        try:
+        """Close Dask cluster and client."""
+        if self.client:
             self.client.close()
+        if self.cluster:
             self.cluster.close()
-            logger.info("Dask cluster shut down successfully")
-        except Exception as e:
-            logger.error(f"Error shutting down Dask cluster: {e}")
+        logger.info("Dask cluster closed")
 
-def _run_backtest_with_retry_and_logging(
+def _run_backtest_task(
     strategy_name: str, 
     params: Dict, 
-    config_dict: Dict, 
-    max_retries: int = 1,
-    log_resources: bool = False
+    config_dict: Dict
 ) -> Dict:
     """
-    Run a single backtest with retry mechanism and optional resource logging.
-    
-    :param strategy_name: Name of the trading strategy
-    :param params: Strategy parameters
-    :param config_dict: Full configuration dictionary
-    :param max_retries: Maximum number of retries
-    :param log_resources: Log CPU and memory usage
-    :return: Backtest result or error information
-    """
-    from fxorcist.config import Settings
-    from fxorcist.backtest.engine import run_backtest
-    import time
+    Isolated task for Dask to run a single backtest trial.
 
-    last_exception = None
-    for attempt in range(max_retries + 1):
-        try:
-            # Optional resource tracking
-            start_time = time.time()
-            resource_usage = {}
-            
-            if log_resources:
-                process = psutil.Process()
-                start_cpu = process.cpu_percent()
-                start_memory = process.memory_info().rss / (1024 * 1024)  # MB
-            
-            # Reconstruct config
-            config = Settings.model_validate(config_dict)
-            result = run_backtest(strategy_name, config, params_file=None)
-            
-            # Capture resource usage if enabled
-            if log_resources:
-                end_cpu = process.cpu_percent()
-                end_memory = process.memory_info().rss / (1024 * 1024)  # MB
-                
-                resource_usage = {
-                    "cpu_usage_percent": end_cpu - start_cpu,
-                    "memory_usage_mb": end_memory - start_memory,
-                    "execution_time_seconds": time.time() - start_time
-                }
-            
-            return {
-                "strategy": strategy_name,
-                "params": params,
-                "metrics": result.get("metrics", {}),
-                "equity_curve": result.get("equity_curve", []),
-                "attempt": attempt,
-                "resources": resource_usage
-            }
-        except Exception as e:
-            logger.warning(f"Backtest attempt {attempt} failed: {e}")
-            last_exception = e
-    
-    # If all retries fail
-    raise last_exception
+    Args:
+        strategy_name (str): Name of trading strategy
+        params (Dict): Strategy-specific parameters
+        config_dict (Dict): Global configuration
+
+    Returns:
+        Dict: Backtest results
+    """
+    # Set seed for reproducibility
+    seed = hash(str(params)) % (2**32)
+    np.random.seed(seed)
+
+    try:
+        # Restore Settings from dict
+        config = Settings.model_validate(config_dict)
+        
+        # Run backtest
+        result = run_backtest(
+            strategy_name, 
+            config, 
+            params_file=None,
+            params=params
+        )
+
+        return {
+            "strategy": strategy_name,
+            "params": params,
+            "metrics": result.get("metrics", {}),
+            "seed": seed
+        }
+    except Exception as e:
+        return {
+            "error": str(e), 
+            "params": params, 
+            "seed": seed
+        }
