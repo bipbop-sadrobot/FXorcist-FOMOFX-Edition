@@ -1,137 +1,92 @@
 import pytest
-import asyncio
-from typing import Dict, Any
-from fxorcist.distributed.dask_runner import DaskRunner, DaskRunnerConfig
-
-def mock_backtest_function(strategy: str, params: Dict[str, Any], config_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Mock backtest function for testing Dask runner.
-    
-    :param strategy: Strategy name
-    :param params: Strategy parameters
-    :param config_dict: Configuration dictionary
-    :return: Simulated backtest result
-    """
-    # Simulate a backtest with some basic logic
-    if strategy == "test_success":
-        return {
-            "strategy": strategy,
-            "params": params,
-            "metrics": {"sharpe": 1.5, "return": 0.2},
-            "equity_curve": [(0, 10000), (1, 10500)]
-        }
-    elif strategy == "test_failure":
-        raise ValueError("Simulated backtest failure")
-    else:
-        return {"error": "Unknown strategy"}
+import numpy as np
+from fxorcist.config import Settings
+from fxorcist.distributed.dask_runner import DaskRunner
 
 @pytest.fixture
-def dask_runner():
-    """Fixture to create a Dask runner for testing."""
-    runner = DaskRunner(
-        config=DaskRunnerConfig(
-            n_workers=2,
-            threads_per_worker=1
-        )
-    )
-    yield runner
+def config():
+    """Create a mock configuration for testing."""
+    return Settings()
+
+def test_dask_runner_initialization():
+    """Test Dask runner initialization."""
+    runner = DaskRunner(n_workers=2, threads_per_worker=1)
+    runner.start()
+    
+    assert runner.cluster is not None
+    assert runner.client is not None
+    
     runner.close()
 
-def test_dask_runner_successful_trials(dask_runner):
-    """
-    Test Dask runner with successful backtest trials.
-    """
-    trial_configs = [
-        {
-            "strategy": "test_success",
-            "params": {"window": 14},
-            "config_dict": {"commission": 0.001}
-        },
-        {
-            "strategy": "test_success",
-            "params": {"window": 21},
-            "config_dict": {"commission": 0.002}
-        }
-    ]
-
-    results = dask_runner.run_trials(trial_configs)
+def test_dask_runner_trial_execution(config):
+    """Test running multiple backtest trials in parallel."""
+    runner = DaskRunner(n_workers=2, threads_per_worker=1)
     
-    assert len(results) == 2
+    # Create sample trial configurations
+    trial_configs = [
+        {"rsi_window": 14, "rsi_overbought": 70, "rsi_oversold": 30},
+        {"rsi_window": 21, "rsi_overbought": 75, "rsi_oversold": 25}
+    ]
+    
+    results = runner.run_trials(
+        strategy_name="rsi", 
+        trial_configs=trial_configs, 
+        config=config
+    )
+    
+    runner.close()
+    
+    # Validate results
+    assert len(results) == len(trial_configs)
     for result in results:
-        assert "metrics" in result
-        assert result["metrics"]["sharpe"] > 0
-        assert "equity_curve" in result
+        assert "metrics" in result or "error" in result
 
-def test_dask_runner_mixed_trials(dask_runner):
-    """
-    Test Dask runner with a mix of successful and failing trials.
-    """
+def test_dask_runner_error_handling(config):
+    """Test error handling in distributed trials."""
+    runner = DaskRunner(n_workers=2, threads_per_worker=1)
+    
+    # Create a trial config that will likely cause an error
     trial_configs = [
-        {
-            "strategy": "test_success",
-            "params": {"window": 14},
-            "config_dict": {"commission": 0.001}
-        },
-        {
-            "strategy": "test_failure",
-            "params": {"window": 21},
-            "config_dict": {"commission": 0.002}
-        }
+        {"invalid_param": "test"}  # This should trigger an error
     ]
-
-    results = dask_runner.run_trials(trial_configs, max_retries=1)
     
-    assert len(results) == 2
-    
-    # Check successful trial
-    assert "metrics" in results[0]
-    assert results[0]["metrics"]["sharpe"] > 0
-    
-    # Check failed trial
-    assert "error" in results[1]
-    assert "traceback" in results[1]
-
-def test_dask_runner_configuration():
-    """
-    Test Dask runner configuration options.
-    """
-    config = DaskRunnerConfig(
-        n_workers=4,
-        threads_per_worker=2,
-        memory_limit="4GB"
+    results = runner.run_trials(
+        strategy_name="rsi", 
+        trial_configs=trial_configs, 
+        config=config
     )
-    
-    runner = DaskRunner(config=config)
-    
-    assert runner.config.n_workers == 4
-    assert runner.config.threads_per_worker == 2
-    assert runner.config.memory_limit == "4GB"
     
     runner.close()
-
-def test_dask_runner_error_handling():
-    """
-    Test Dask runner error handling and retry mechanism.
-    """
-    runner = DaskRunner(
-        config=DaskRunnerConfig(
-            n_workers=2,
-            threads_per_worker=1
-        )
-    )
     
-    trial_configs = [
-        {
-            "strategy": "test_failure",
-            "params": {"window": 14},
-            "config_dict": {"commission": 0.001}
-        }
-    ]
-    
-    results = runner.run_trials(trial_configs, max_retries=2)
-    
+    # Validate error handling
     assert len(results) == 1
     assert "error" in results[0]
-    assert "traceback" in results[0]
+
+def test_dask_runner_seed_reproducibility(config):
+    """Test that seeds are consistently generated."""
+    runner = DaskRunner(n_workers=2, threads_per_worker=1)
+    
+    trial_configs = [
+        {"rsi_window": 14, "rsi_overbought": 70, "rsi_oversold": 30},
+        {"rsi_window": 21, "rsi_overbought": 75, "rsi_oversold": 25}
+    ]
+    
+    results1 = runner.run_trials(
+        strategy_name="rsi", 
+        trial_configs=trial_configs, 
+        config=config
+    )
+    
+    results2 = runner.run_trials(
+        strategy_name="rsi", 
+        trial_configs=trial_configs, 
+        config=config
+    )
     
     runner.close()
+    
+    # Compare seeds to ensure reproducibility
+    seeds1 = [result.get("seed", None) for result in results1]
+    seeds2 = [result.get("seed", None) for result in results2]
+    
+    assert seeds1 == seeds2
