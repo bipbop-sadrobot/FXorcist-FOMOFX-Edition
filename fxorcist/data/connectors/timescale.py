@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any, Union
 import logging
 import json
 import os
+import pandas as pd
 
 from fxorcist.events.event_bus import Event
 from fxorcist.data.connectors.base import DataConnector
@@ -11,13 +12,15 @@ from fxorcist.data.connectors.base import DataConnector
 logger = logging.getLogger(__name__)
 
 class TimescaleConnectorConfig:
-    """Configuration for TimescaleDB connector."""
+    """Enhanced configuration for TimescaleDB connector."""
     def __init__(
         self, 
         dsn: Optional[str] = None,
         max_connection_pool_size: int = 10,
         connection_timeout: int = 10,
-        data_retention_days: Optional[int] = 365
+        data_retention_days: Optional[int] = 365,
+        enable_compression: bool = True,
+        enable_continuous_aggregates: bool = True
     ):
         """
         Initialize TimescaleDB connector configuration.
@@ -26,6 +29,8 @@ class TimescaleConnectorConfig:
         :param max_connection_pool_size: Maximum number of connections in the pool
         :param connection_timeout: Connection timeout in seconds
         :param data_retention_days: Number of days to retain historical data
+        :param enable_compression: Enable TimescaleDB compression
+        :param enable_continuous_aggregates: Enable continuous aggregates for OHLCV
         """
         self.dsn = dsn or os.getenv(
             'TIMESCALEDB_DSN', 
@@ -34,9 +39,11 @@ class TimescaleConnectorConfig:
         self.max_connection_pool_size = max_connection_pool_size
         self.connection_timeout = connection_timeout
         self.data_retention_days = data_retention_days
+        self.enable_compression = enable_compression
+        self.enable_continuous_aggregates = enable_continuous_aggregates
 
 class TimescaleConnector(DataConnector):
-    """Advanced TimescaleDB connector for time-series forex data."""
+    """Advanced TimescaleDB connector with compression and aggregation support."""
     
     def __init__(
         self, 
@@ -67,7 +74,7 @@ class TimescaleConnector(DataConnector):
             )
             logger.info("Connected to TimescaleDB successfully")
             
-            # Setup hypertable and retention policy if not exists
+            # Setup hypertable, retention policy, compression, and continuous aggregates
             await self._initialize_database()
         except Exception as e:
             logger.error(f"Failed to connect to TimescaleDB: {e}")
@@ -75,7 +82,7 @@ class TimescaleConnector(DataConnector):
 
     async def _initialize_database(self):
         """
-        Initialize database with hypertable and retention policy.
+        Initialize database with advanced TimescaleDB features.
         """
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -103,60 +110,142 @@ class TimescaleConnector(DataConnector):
                             INTERVAL '{self.config.data_retention_days} days'
                         );
                     """)
+                
+                # Enable compression if configured
+                if self.config.enable_compression:
+                    await conn.execute("""
+                        ALTER TABLE ticks SET (
+                            timescaledb.compress,
+                            timescaledb.compress_segmentby = 'symbol'
+                        );
+                        
+                        SELECT add_compression_policy('ticks', INTERVAL '7 days');
+                    """)
+                
+                # Create continuous aggregates for OHLCV if configured
+                if self.config.enable_continuous_aggregates:
+                    await conn.execute("""
+                        CREATE MATERIALIZED VIEW IF NOT EXISTS ohlcv_1m
+                        WITH (timescaledb.continuous) AS
+                        SELECT 
+                            time_bucket('1 minute', timestamp) as bucket,
+                            symbol,
+                            FIRST(bid, timestamp) as open,
+                            MAX(bid) as high,
+                            MIN(bid) as low,
+                            LAST(bid, timestamp) as close,
+                            AVG(bid) as vwap,
+                            COUNT(*) as volume
+                        FROM ticks
+                        GROUP BY bucket, symbol;
+                        
+                        -- Create an index on the continuous aggregate for faster querying
+                        CREATE INDEX IF NOT EXISTS ohlcv_1m_bucket_symbol_idx 
+                        ON ohlcv_1m (bucket, symbol);
+                    """)
 
     async def fetch(
         self,
         symbol: str,
         start: datetime,
         end: Optional[datetime] = None,
+        resolution: str = 'tick',
         limit: Optional[int] = None
-    ) -> List[Event]:
+    ) -> Union[List[Event], pd.DataFrame]:
         """
-        Fetch tick data for a given symbol and time range.
+        Fetch tick or aggregated data for a given symbol and time range.
         
         :param symbol: Trading symbol (e.g., 'EURUSD')
         :param start: Start datetime
         :param end: Optional end datetime
+        :param resolution: 'tick', '1m', '5m', '1h'
         :param limit: Optional limit on number of rows
-        :return: List of tick events
+        :return: List of tick events or OHLCV DataFrame
         """
         if not self.pool:
             await self.connect()
 
-        query = """
-        SELECT timestamp, bid, ask FROM ticks
-        WHERE symbol = $1 AND timestamp >= $2
-        """
-        params = [symbol, start]
-        
-        if end:
-            query += " AND timestamp <= $3"
-            params.append(end)
-        
-        if limit:
-            query += " LIMIT $4"
-            params.append(limit)
+        # Determine query based on resolution
+        if resolution == 'tick':
+            query = """
+            SELECT timestamp, bid, ask FROM ticks
+            WHERE symbol = $1 AND timestamp >= $2
+            """
+            params = [symbol, start]
+            
+            if end:
+                query += " AND timestamp <= $3"
+                params.append(end)
+            
+            if limit:
+                query += " LIMIT $4"
+                params.append(limit)
 
-        events = []
-        async with self.pool.acquire() as conn:
-            try:
-                rows = await conn.fetch(query, *params)
-                for row in rows:
-                    events.append(Event(
-                        timestamp=row["timestamp"],
-                        type="tick",
-                        payload={
-                            "symbol": symbol,
-                            "bid": float(row["bid"]),
-                            "ask": float(row["ask"]),
-                            "mid": (float(row["bid"]) + float(row["ask"])) / 2
-                        }
-                    ))
-            except Exception as e:
-                logger.error(f"Error fetching data from TimescaleDB: {e}")
-                raise
+            events = []
+            async with self.pool.acquire() as conn:
+                try:
+                    rows = await conn.fetch(query, *params)
+                    for row in rows:
+                        events.append(Event(
+                            timestamp=row["timestamp"],
+                            type="tick",
+                            payload={
+                                "symbol": symbol,
+                                "bid": float(row["bid"]),
+                                "ask": float(row["ask"]),
+                                "mid": (float(row["bid"]) + float(row["ask"])) / 2
+                            }
+                        ))
+                except Exception as e:
+                    logger.error(f"Error fetching tick data from TimescaleDB: {e}")
+                    raise
 
-        return events
+            return events
+        
+        else:
+            # Use continuous aggregate for OHLCV data
+            resolution_map = {
+                '1m': '1 minute',
+                '5m': '5 minutes',
+                '1h': '1 hour'
+            }
+            
+            if resolution not in resolution_map:
+                raise ValueError(f"Unsupported resolution: {resolution}")
+            
+            query = """
+            SELECT 
+                bucket, symbol, open, high, low, close, vwap, volume 
+            FROM ohlcv_1m
+            WHERE symbol = $1 AND bucket >= $2
+            """
+            params = [symbol, start]
+            
+            if end:
+                query += " AND bucket <= $3"
+                params.append(end)
+            
+            if limit:
+                query += " LIMIT $4"
+                params.append(limit)
+            
+            async with self.pool.acquire() as conn:
+                try:
+                    rows = await conn.fetch(query, *params)
+                    
+                    # Convert to pandas DataFrame
+                    df = pd.DataFrame(rows, columns=[
+                        'timestamp', 'symbol', 'open', 'high', 'low', 'close', 'vwap', 'volume'
+                    ])
+                    
+                    # Convert numeric columns
+                    numeric_cols = ['open', 'high', 'low', 'close', 'vwap', 'volume']
+                    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric)
+                    
+                    return df
+                except Exception as e:
+                    logger.error(f"Error fetching OHLCV data from TimescaleDB: {e}")
+                    raise
 
     async def insert_ticks(
         self, 
