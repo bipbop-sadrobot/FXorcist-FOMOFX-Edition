@@ -1,31 +1,24 @@
-from typing import List
+from typing import List, Optional
 from datetime import datetime
-import asyncio
+from rich.console import Console
 
 from fxorcist.config import Settings
-from fxorcist.data.connectors.base import DataConnector
+from fxorcist.events.event_bus import Event
 from fxorcist.data.connectors.csv import CSVConnector
-from fxorcist.data.connectors.exchange import ExchangeConnector
-# from fxorcist.data.connectors.timescale import TimescaleConnector  # Phase 4
 
-def get_connector(config: Settings) -> DataConnector:
-    """Factory: return connector based on config.data.storage."""
-    storage = config.data.storage
-    if storage == "parquet" or storage == "csv":
-        return CSVConnector(config.data.parquet_dir)
-    elif storage == "exchange":
-        return ExchangeConnector()
-    else:
-        raise ValueError(f"Unsupported storage: {storage}")
+console = Console()
+
+def get_connector(config: Settings):
+    # For now, default to CSVConnector
+    return CSVConnector(data_dir=config.data_dir)
 
 async def prepare_data(
     symbol: str,
     config: Settings,
-    start_date: str = None
-) -> List:
-    """Prepare data — load or download."""
+    start_date: Optional[str] = None
+) -> List[Event]:
     connector = get_connector(config)
     start = datetime.fromisoformat(start_date) if start_date else datetime(2020, 1, 1)
     events = await connector.fetch(symbol, start)
-    print(f"Loaded {len(events)} events for {symbol}.")
+    console.log(f"[green]Loaded {len(events)} events for {symbol}[/green]")
     return events
