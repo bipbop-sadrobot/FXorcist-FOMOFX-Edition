@@ -2,11 +2,14 @@
 Backtest pipeline integration, tying together the event bus, backtest engine, and strategy.
 """
 from typing import Dict, Any, Optional
+from datetime import datetime, timedelta
 from rich.progress import Progress
+import pandas as pd
 
 from fxorcist.events.event_bus import EventBus, create_tick_event, create_bar_event
 from fxorcist.backtest.engine import BacktestEngine
 from fxorcist.backtest.metrics import calculate_metrics
+from fxorcist.data.loader import load_symbol
 
 def run_backtest(
     strategy_name: str,
