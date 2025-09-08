@@ -86,7 +86,7 @@ class DashboardModule(TradingModule):
             raise DashboardError(f"Failed to stop module: {e}")
     
     async def handle_event(self, event: Event):
-        """Handle trading system events.
+        """Handle trading system events with enhanced error handling.
         
         Args:
             event: Event to handle
@@ -95,20 +95,30 @@ class DashboardModule(TradingModule):
             # Update last activity
             self.last_update = datetime.utcnow()
             
-            # Process event based on type
-            if event.type == EventType.TRADE:
-                await self._handle_trade_event(event)
-            elif event.type == EventType.MARKET:
-                await self._handle_market_event(event)
-            elif event.type == EventType.SIGNAL:
-                await self._handle_signal_event(event)
+            # Process event with circuit breaker protection
+            async with self.circuit_breaker:
+                if event.type == EventType.TRADE:
+                    await self._handle_trade_event(event)
+                elif event.type == EventType.MARKET:
+                    await self._handle_market_event(event)
+                elif event.type == EventType.SIGNAL:
+                    await self._handle_signal_event(event)
             
             # Reset error count on successful processing
             self.error_count = 0
             
+        except CircuitBreakerError as e:
+            self.logger.error(f"Circuit breaker open: {e}")
+            await self._handle_circuit_breaker_error(event)
         except Exception as e:
             self.error_count += 1
-            self.logger.error(f"Error handling event: {e}")
+            self.logger.error(f"Error handling event: {e}", exc_info=True)
+            
+            # Update metrics
+            DASHBOARD_ERROR_COUNTER.labels(
+                module=self.name,
+                event_type=event.type.value
+            ).inc()
             
             if self.error_count >= self.max_errors:
                 self.logger.critical("Maximum error count exceeded")
@@ -215,23 +225,39 @@ class DashboardModule(TradingModule):
             raise
     
     async def _cleanup_loop(self):
-        """Periodic cleanup and maintenance."""
+        """Enhanced periodic cleanup and maintenance."""
         while True:
             try:
-                # Check module health
-                if not await self.health_check():
+                # Check module health with metrics
+                health_status = await self.health_check()
+                DASHBOARD_HEALTH_GAUGE.labels(
+                    module=self.name
+                ).set(1 if health_status else 0)
+                
+                if not health_status:
                     self.logger.warning("Health check failed")
                     await self.reset()
                 
                 # Clean expired cache entries
                 await self._cleanup_cache()
                 
+                # Check circuit breaker status
+                if self.circuit_breaker.is_open:
+                    self.logger.warning("Circuit breaker is open")
+                    DASHBOARD_CIRCUIT_BREAKER_GAUGE.labels(
+                        module=self.name
+                    ).set(0)
+                else:
+                    DASHBOARD_CIRCUIT_BREAKER_GAUGE.labels(
+                        module=self.name
+                    ).set(1)
+                
                 await asyncio.sleep(60)  # Run every minute
                 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.logger.error(f"Error in cleanup loop: {e}")
+                self.logger.error(f"Error in cleanup loop: {e}", exc_info=True)
                 await asyncio.sleep(5)  # Back off on error
     
     async def _cleanup_cache(self):
