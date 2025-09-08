@@ -1,15 +1,15 @@
 """
 Tests for FXorcist CLI commands and functionality.
 """
-
-import os
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
-from click.testing import CliRunner
+from typer.testing import CliRunner
+import pandas as pd
 
-from fxorcist_cli import cli, Config
+from fxorcist.cli import app
+from fxorcist.utils.config import load_config
 
 # Test fixtures
 @pytest.fixture
@@ -21,167 +21,216 @@ def runner():
 def mock_config():
     """Create a mock configuration."""
     return {
-        "data_dir": "test_data",
+        "base_dir": "test_data",
         "models_dir": "test_models",
         "logs_dir": "test_logs",
-        "dashboard_port": 9999,
-        "auto_backup": True,
-        "quality_threshold": 0.8,
-        "batch_size": 500
+        "seed": 42,
+        "batch_size": 500,
     }
 
 @pytest.fixture
 def config_file(tmp_path, mock_config):
     """Create a temporary config file."""
-    config_path = tmp_path / "config" / "cli_config.json"
-    config_path.parent.mkdir(parents=True)
+    config_path = tmp_path / "config.yaml"
     config_path.write_text(json.dumps(mock_config))
     return config_path
 
-# Test Config class
-def test_config_load_defaults():
-    """Test loading default configuration."""
-    config = Config()
-    assert "data_dir" in config.config
-    assert "models_dir" in config.config
-    assert "dashboard_port" in config.config
+# Test CLI basics
+def test_version(runner):
+    """Test version display."""
+    with patch("fxorcist.__version__", "1.0.0"):
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert "1.0.0" in result.output
 
-def test_config_save(tmp_path):
-    """Test saving configuration."""
-    config = Config()
-    config.config_file = tmp_path / "config" / "cli_config.json"
-    config.save_config()
-    assert config.config_file.exists()
-    saved_config = json.loads(config.config_file.read_text())
-    assert saved_config == config.config
-
-# Test CLI commands
-def test_cli_help(runner):
-    """Test CLI help output."""
-    result = runner.invoke(cli, ['--help'])
+def test_help(runner):
+    """Test help output."""
+    result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert 'FXorcist AI Dashboard' in result.output
+    assert "FXorcist" in result.output
+    for cmd in ["prepare", "backtest", "optimize", "serve"]:
+        assert cmd in result.output
 
-def test_data_integrate(runner):
-    """Test data integration command."""
-    with patch('fxorcist_cli.OptimizedDataIntegrator') as mock_integrator:
-        mock_instance = MagicMock()
-        mock_instance.process_optimized_data.return_value = {"processed": 10}
-        mock_integrator.return_value = mock_instance
+# Test prepare command
+def test_prepare_command(runner, config_file):
+    """Test data preparation command."""
+    with patch("fxorcist.data.loader.load_symbol") as mock_load:
+        mock_load.return_value = pd.DataFrame({
+            "open": [1.0, 1.1],
+            "close": [1.1, 1.2]
+        }, index=pd.date_range("2025-01-01", periods=2))
         
-        result = runner.invoke(cli, ['data', 'integrate'])
-        assert result.exit_code == 0
-        mock_instance.process_optimized_data.assert_called_once()
-
-def test_data_validate(runner):
-    """Test data validation command."""
-    with patch('fxorcist_cli.logger') as mock_logger:
-        test_file = "test.csv"
-        result = runner.invoke(cli, ['data', 'validate', test_file])
-        assert result.exit_code == 1  # Should fail as file doesn't exist
-        mock_logger.error.assert_called()
-
-def test_train_start(runner):
-    """Test training start command."""
-    with patch('fxorcist_cli.EnhancedTrainingPipeline') as mock_pipeline:
-        mock_instance = MagicMock()
-        mock_pipeline.return_value = mock_instance
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "prepare",
+            "EURUSD",
+            "--start-date", "2025-01-01"
+        ])
         
-        result = runner.invoke(cli, ['train', 'start', '--quick'])
         assert result.exit_code == 0
-        mock_pipeline.assert_called_once()
+        mock_load.assert_called_once()
+        assert "Loaded" in result.output
 
-def test_dashboard_start(runner):
-    """Test dashboard start command."""
-    with patch('subprocess.run') as mock_run:
-        mock_run.return_value = MagicMock(returncode=0)
-        result = runner.invoke(cli, ['dashboard', 'start', '--port', '8888'])
+def test_prepare_error(runner, config_file):
+    """Test data preparation error handling."""
+    with patch("fxorcist.data.loader.load_symbol") as mock_load:
+        mock_load.side_effect = Exception("Data error")
+        
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "prepare",
+            "INVALID"
+        ])
+        
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+# Test backtest command
+def test_backtest_command(runner, config_file):
+    """Test backtest execution."""
+    with patch("fxorcist.backtest.engine.run_backtest") as mock_run:
+        mock_run.return_value = {
+            "sharpe": 1.5,
+            "max_drawdown": -0.1,
+            "total_return": 0.25
+        }
+        
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "backtest",
+            "rsi",
+            "--symbol", "EURUSD"
+        ])
+        
         assert result.exit_code == 0
         mock_run.assert_called_once()
-        assert '--server.port 8888' in mock_run.call_args[0][0]
+        assert "Backtest Results" in result.output
+        assert "1.5" in result.output  # Sharpe ratio
 
-def test_memory_stats(runner):
-    """Test memory stats command."""
-    with patch('fxorcist_cli.MemoryManager') as mock_manager:
-        mock_instance = MagicMock()
-        mock_instance.get_statistics.return_value = {"records": 100, "size": "1MB"}
-        mock_manager.return_value = mock_instance
+def test_backtest_with_report(runner, config_file):
+    """Test backtest with report generation."""
+    with patch("fxorcist.backtest.engine.run_backtest") as mock_run:
+        mock_results = {
+            "sharpe": 1.5,
+            "report": MagicMock()
+        }
+        mock_run.return_value = mock_results
         
-        result = runner.invoke(cli, ['memory', 'stats'])
-        assert result.exit_code == 0
-        mock_instance.get_statistics.assert_called_once()
-
-def test_memory_clear(runner):
-    """Test memory clear command."""
-    with patch('fxorcist_cli.MemoryManager') as mock_manager:
-        mock_instance = MagicMock()
-        mock_manager.return_value = mock_instance
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "backtest",
+            "rsi",
+            "--symbol", "EURUSD",
+            "--report"
+        ])
         
-        result = runner.invoke(cli, ['memory', 'clear'])
         assert result.exit_code == 0
-        mock_instance.clear_cache.assert_called_once()
+        mock_results["report"].save.assert_called_once()
+        assert "Report saved" in result.output
 
-def test_config_view(runner):
-    """Test config view command."""
-    result = runner.invoke(cli, ['config', 'view'])
-    assert result.exit_code == 0
-    assert 'Current Configuration' in result.output
-
-def test_config_set(runner):
-    """Test config set command."""
-    with patch('fxorcist_cli.Config.save_config') as mock_save:
-        inputs = ['test_key', 'test_value']
-        result = runner.invoke(cli, ['config', 'set'], input='\n'.join(inputs))
-        assert result.exit_code == 0
-        mock_save.assert_called_once()
-
-def test_config_reset(runner):
-    """Test config reset command."""
-    with patch('fxorcist_cli.Config.save_config') as mock_save:
-        result = runner.invoke(cli, ['config', 'reset'], input='y\n')
-        assert result.exit_code == 0
-        mock_save.assert_called_once()
-
-# Test error handling
-def test_data_integrate_error(runner):
-    """Test error handling in data integration."""
-    with patch('fxorcist_cli.OptimizedDataIntegrator') as mock_integrator:
-        mock_instance = MagicMock()
-        mock_instance.process_optimized_data.side_effect = Exception("Test error")
-        mock_integrator.return_value = mock_instance
+# Test optimize command
+def test_optimize_command(runner, config_file):
+    """Test optimization execution."""
+    with patch("fxorcist.ml.optuna_runner.run_optuna") as mock_run:
+        mock_run.return_value = {
+            "best_params": {
+                "window": 14,
+                "threshold": 70
+            }
+        }
         
-        result = runner.invoke(cli, ['data', 'integrate'])
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "optimize",
+            "rsi",
+            "--symbol", "EURUSD",
+            "--trials", "10"
+        ])
+        
+        assert result.exit_code == 0
+        mock_run.assert_called_once()
+        assert "Best Parameters" in result.output
+        assert "window" in result.output
+
+def test_optimize_with_mlflow(runner, config_file):
+    """Test optimization with MLflow tracking."""
+    with patch("fxorcist.ml.optuna_runner.run_optuna") as mock_run:
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "optimize",
+            "rsi",
+            "--symbol", "EURUSD",
+            "--mlflow"
+        ])
+        
+        assert result.exit_code == 0
+        mock_run.assert_called_once_with(
+            mock_run.call_args[0][0],  # df
+            n_trials=30,  # default
+            seed=42,  # from mock config
+            use_mlflow=True,
+            progress=mock_run.call_args[1]["progress"]
+        )
+
+# Test serve command
+def test_serve_command(runner, config_file):
+    """Test dashboard server startup."""
+    with patch("fxorcist.dashboard.app.run_dashboard") as mock_run:
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "serve",
+            "--port", "8888",
+            "--reload"
+        ])
+        
+        assert result.exit_code == 0
+        mock_run.assert_called_once_with(
+            host="127.0.0.1",
+            port=8888,
+            reload=True,
+            config=mock_run.call_args[1]["config"]
+        )
+
+def test_serve_missing_dependencies(runner, config_file):
+    """Test dashboard server with missing dependencies."""
+    with patch("fxorcist.dashboard.app.run_dashboard", side_effect=ImportError):
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "serve"
+        ])
+        
         assert result.exit_code == 1
-        assert "Test error" in str(result.output)
+        assert "dependencies not installed" in result.output
 
-def test_dashboard_start_error(runner):
-    """Test error handling in dashboard start."""
-    with patch('subprocess.run') as mock_run:
-        mock_run.side_effect = subprocess.CalledProcessError(1, "test")
-        result = runner.invoke(cli, ['dashboard', 'start'])
-        assert result.exit_code == 1
-        assert "failed to start" in str(result.output).lower()
+# Test JSON output
+def test_json_output(runner, config_file):
+    """Test JSON output format."""
+    with patch("fxorcist.backtest.engine.run_backtest") as mock_run:
+        mock_run.return_value = {"sharpe": 1.5}
+        
+        result = runner.invoke(app, [
+            "--config", str(config_file),
+            "--json",
+            "backtest",
+            "rsi",
+            "--symbol", "EURUSD"
+        ])
+        
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["sharpe"] == 1.5
 
-# Test type conversion in config
-def test_config_set_type_conversion(runner):
-    """Test type conversion in config set command."""
-    test_cases = [
-        ('int_key', '42', int),
-        ('float_key', '3.14', float),
-        ('bool_key', 'true', bool),
-        ('str_key', 'hello', str)
-    ]
+# Test config loading
+def test_invalid_config(runner, tmp_path):
+    """Test handling of invalid config file."""
+    bad_config = tmp_path / "bad_config.yaml"
+    bad_config.write_text("invalid: yaml: content")
     
-    for key, value, expected_type in test_cases:
-        with patch('fxorcist_cli.Config.save_config'):
-            inputs = [key, value]
-            result = runner.invoke(cli, ['config', 'set'], input='\n'.join(inputs))
-            assert result.exit_code == 0
-
-# Test debug mode
-def test_debug_mode(runner):
-    """Test debug mode enabling."""
-    with patch('logging.getLogger') as mock_logger:
-        result = runner.invoke(cli, ['--debug', 'config', 'view'])
-        assert result.exit_code == 0
-        mock_logger.assert_called_with("fxorcist")
+    result = runner.invoke(app, [
+        "--config", str(bad_config),
+        "prepare",
+        "EURUSD"
+    ])
+    
+    assert result.exit_code == 1
+    assert "Error" in result.output
