@@ -279,15 +279,11 @@ class DashboardModule(TradingModule):
             raise
     
     async def _cleanup_loop(self):
-        """Enhanced periodic cleanup and maintenance."""
+        """Periodic cleanup and maintenance."""
         while True:
             try:
-                # Check module health with metrics
+                # Check module health
                 health_status = await self.health_check()
-                DASHBOARD_HEALTH_GAUGE.labels(
-                    module=self.name
-                ).set(1 if health_status else 0)
-                
                 if not health_status:
                     self.logger.warning("Health check failed")
                     await self.reset()
@@ -298,13 +294,6 @@ class DashboardModule(TradingModule):
                 # Check circuit breaker status
                 if self.circuit_breaker.is_open:
                     self.logger.warning("Circuit breaker is open")
-                    DASHBOARD_CIRCUIT_BREAKER_GAUGE.labels(
-                        module=self.name
-                    ).set(0)
-                else:
-                    DASHBOARD_CIRCUIT_BREAKER_GAUGE.labels(
-                        module=self.name
-                    ).set(1)
                 
                 await asyncio.sleep(60)  # Run every minute
                 
