@@ -1,13 +1,15 @@
 """
 Base dashboard module with trading system integration.
 
-Implements core dashboard functionality and trading system integration.
+Implements core dashboard functionality and trading system integration with
+circuit breaker pattern for resilience.
 """
 
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import asyncio
+from contextlib import asynccontextmanager
 
 from ..core.base import TradingModule
 from ..core.events import Event, EventType
@@ -15,12 +17,25 @@ from ..core.dispatcher import EventDispatcher
 from .models import Trade, Position, OrderDirection, TradeStatus
 from .cache import cache_instance
 from .websocket import connection_manager, WebSocketMessage
+from .utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
+
+# Default circuit breaker settings
+DEFAULT_CIRCUIT_BREAKER_CONFIG = {
+    'failure_threshold': 5,
+    'reset_timeout': 60,
+    'half_open_timeout': 30
+}
 
 class DashboardError(Exception):
     """Base exception for dashboard errors."""
     pass
 
+class CircuitBreakerConfigError(DashboardError):
+    """Error in circuit breaker configuration."""
+    pass
+
 class DashboardModule(TradingModule):
+    """Base class for dashboard components with trading system integration."""
     """Base class for dashboard components with trading system integration."""
     
     def __init__(
@@ -34,7 +49,7 @@ class DashboardModule(TradingModule):
         Args:
             name: Module name
             event_dispatcher: Event dispatcher instance
-            config: Optional configuration
+            config: Optional configuration dictionary with optional circuit_breaker section
         """
         super().__init__(name, event_dispatcher, config)
         
@@ -43,6 +58,15 @@ class DashboardModule(TradingModule):
         self.error_count = 0
         self.max_errors = self.config.get('max_errors', 10)
         self._cleanup_task: Optional[asyncio.Task] = None
+        
+        # Initialize circuit breaker
+        circuit_breaker_config = self.config.get('circuit_breaker', DEFAULT_CIRCUIT_BREAKER_CONFIG)
+        self.circuit_breaker = CircuitBreaker(
+            name=f"{self.name}_circuit_breaker",
+            failure_threshold=circuit_breaker_config.get('failure_threshold', 5),
+            reset_timeout=circuit_breaker_config.get('reset_timeout', 60),
+            half_open_timeout=circuit_breaker_config.get('half_open_timeout', 30)
+        )
     
     async def start(self):
         """Start dashboard module."""
