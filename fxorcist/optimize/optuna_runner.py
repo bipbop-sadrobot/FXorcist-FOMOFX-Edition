@@ -89,10 +89,12 @@ def run_optuna(
     n_trials: int = 100,
     events: Optional[List[Any]] = None,
     strategy_factory: Optional[Callable] = None,
-    progress: Optional[Progress] = None
+    progress: Optional[Progress] = None,
+    storage: Optional[str] = None,
+    study_name: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Run Optuna hyperparameter optimization.
+    Run Optuna hyperparameter optimization with enhanced tracking and error handling.
     
     Args:
         strategy_name: Name of the strategy to optimize
@@ -101,20 +103,46 @@ def run_optuna(
         events: Optional list of market events
         strategy_factory: Optional factory to create strategy instances
         progress: Optional Rich progress bar
+        storage: Optional storage URL for study persistence
+        study_name: Optional name for the Optuna study
     
     Returns:
         Dictionary containing optimization study results
-    """
-    # Create Optuna study
-    study = optuna.create_study(
-        direction='minimize',
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=5)
-    )
     
-    # Run optimization
+    Raises:
+        RuntimeError: If optimization fails
+    """
+    # Configure logging
+    import logging
+    logger = logging.getLogger(f'optuna.{strategy_name}')
+    logger.setLevel(logging.INFO)
+    
+    # Create Optuna study with advanced configuration
+    try:
+        study = optuna.create_study(
+            direction='minimize',
+            pruner=optuna.pruners.MedianPruner(
+                n_startup_trials=10, 
+                n_warmup_steps=5
+            ),
+            storage=storage,
+            study_name=study_name or f'{strategy_name}_optimization',
+            load_if_exists=True
+        )
+    except Exception as e:
+        logger.error(f"Failed to create Optuna study: {e}")
+        raise RuntimeError(f"Study creation failed: {e}")
+    
+    # Run optimization with comprehensive error handling
     try:
         if progress:
             task = progress.add_task(f"Optimizing {strategy_name}", total=n_trials)
+        
+        def log_trial_callback(study, trial):
+            """Log each trial and update progress."""
+            logger.info(f"Trial {trial.number}: {trial.params}")
+            if progress:
+                progress.update(task, advance=1)
         
         study.optimize(
             lambda trial: objective(
@@ -125,34 +153,41 @@ def run_optuna(
                 strategy_factory
             ), 
             n_trials=n_trials,
-            callbacks=[
-                lambda study, trial: progress.update(task, advance=1) if progress else None
-            ]
+            callbacks=[log_trial_callback]
         )
     except Exception as e:
-        print(f"Optimization error: {e}")
-        raise
+        logger.error(f"Optimization failed: {e}")
+        raise RuntimeError(f"Optimization error: {e}")
     finally:
         if progress:
             progress.update(task, completed=True)
     
-    # Prepare results
+    # Prepare comprehensive results
     results = {
         'best_params': study.best_params,
         'best_value': study.best_value,
         'best_trial': {
             'number': study.best_trial.number,
             'params': study.best_trial.params,
-            'value': study.best_trial.value
+            'value': study.best_trial.value,
+            'datetime': study.best_trial.datetime_start
         },
         'trials': [
             {
                 'number': t.number,
                 'params': t.params,
                 'value': t.value,
-                'state': t.state.name
+                'state': t.state.name,
+                'datetime_start': t.datetime_start,
+                'datetime_complete': t.datetime_complete
             } for t in study.trials
-        ]
+        ],
+        'metadata': {
+            'strategy': strategy_name,
+            'total_trials': len(study.trials),
+            'pruned_trials': sum(1 for t in study.trials if t.state == optuna.trial.TrialState.PRUNED),
+            'completed_trials': sum(1 for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE)
+        }
     }
     
     return results
