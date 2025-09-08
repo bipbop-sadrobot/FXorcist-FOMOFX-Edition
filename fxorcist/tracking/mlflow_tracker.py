@@ -1,158 +1,200 @@
 import mlflow
 import json
-import os
-import logging
-from typing import Dict, Any, Optional, List, Union
-from datetime import datetime
 import pandas as pd
 import quantstats as qs
+from typing import Dict, Any, Optional, List
+import logging
+import os
+import numpy as np
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-class MLflowTrackerConfig:
-    """Enhanced configuration for MLflow tracking."""
+class MLflowTracker:
+    """Advanced experiment tracking with MLflow and QuantStats."""
+
     def __init__(
         self, 
-        tracking_uri: str = "http://localhost:5000", 
+        tracking_uri: Optional[str] = None,
         experiment_name: str = "fxorcist-backtests",
-        artifact_dir: Optional[str] = None,
-        generate_quantstats: bool = True
+        artifact_dir: Optional[str] = None
     ):
         """
-        Initialize MLflow tracker configuration.
-        
-        :param tracking_uri: URI for MLflow tracking server
-        :param experiment_name: Name of the experiment
-        :param artifact_dir: Directory to store artifacts
-        :param generate_quantstats: Auto-generate QuantStats reports
+        Initialize MLflow tracking with advanced configuration.
+
+        Args:
+            tracking_uri (str, optional): MLflow tracking server URI
+            experiment_name (str): Name of the experiment
+            artifact_dir (str, optional): Directory to store artifacts
         """
-        self.tracking_uri = tracking_uri
-        self.experiment_name = experiment_name
-        self.artifact_dir = artifact_dir or os.path.join(os.getcwd(), "mlflow_artifacts")
-        self.generate_quantstats = generate_quantstats
+        # Set tracking URI if provided, otherwise use default
+        if tracking_uri:
+            mlflow.set_tracking_uri(tracking_uri)
         
+        # Set experiment
+        mlflow.set_experiment(experiment_name)
+        
+        # Configure artifact directory
+        self.artifact_dir = artifact_dir or os.path.join(os.getcwd(), "mlflow_artifacts")
         os.makedirs(self.artifact_dir, exist_ok=True)
 
-class MLflowTracker:
-    """Advanced MLflow experiment tracking with QuantStats integration."""
-    
-    def __init__(
-        self, 
-        config: Optional[MLflowTrackerConfig] = None,
-        logging_level: int = logging.INFO
-    ):
-        """
-        Initialize MLflow tracking.
-        
-        :param config: MLflow tracker configuration
-        :param logging_level: Logging level for the tracker
-        """
-        logger.setLevel(logging_level)
-        
-        # Use default config if not provided
-        self.config = config or MLflowTrackerConfig()
-        
-        try:
-            mlflow.set_tracking_uri(self.config.tracking_uri)
-            mlflow.set_experiment(self.config.experiment_name)
-            logger.info(f"MLflow tracking initialized: {self.config.tracking_uri}")
-        except Exception as e:
-            logger.error(f"Failed to initialize MLflow tracking: {e}")
-            raise
+        logger.info(f"MLflow tracking initialized. Tracking URI: {mlflow.get_tracking_uri()}")
+        logger.info(f"Artifact directory: {self.artifact_dir}")
 
     def log_trial(
         self, 
-        trial_id: Union[str, int], 
+        trial_id: str, 
         params: Dict[str, Any], 
         metrics: Dict[str, float], 
         config: Dict[str, Any], 
-        returns_series: Optional[pd.Series] = None,
-        equity_curve: Optional[List[tuple]] = None,
+        returns: Optional[pd.Series] = None,
         tags: Optional[Dict[str, str]] = None
-    ):
+    ) -> str:
         """
-        Log a comprehensive trial to MLflow with optional QuantStats report.
-        
-        :param trial_id: Unique identifier for the trial
-        :param params: Hyperparameters used in the trial
-        :param metrics: Performance metrics from the trial
-        :param config: Full configuration used
-        :param returns_series: Optional returns series for QuantStats
-        :param equity_curve: Optional equity curve data
-        :param tags: Optional tags for the run
+        Log a complete trial with comprehensive tracking.
+
+        Args:
+            trial_id (str): Unique identifier for the trial
+            params (Dict): Hyperparameters used in the trial
+            metrics (Dict): Performance metrics
+            config (Dict): Full configuration used
+            returns (pd.Series, optional): Daily returns for detailed analysis
+            tags (Dict, optional): Additional tags for the run
+
+        Returns:
+            str: MLflow run ID
         """
-        try:
-            with mlflow.start_run(run_name=f"trial_{trial_id}"):
-                # Log hyperparameters
+        with mlflow.start_run(run_name=f"trial_{trial_id}"):
+            try:
+                # Log parameters
                 mlflow.log_params(params)
-                
-                # Log configuration parameters
-                mlflow.log_params({f"config_{k}": _sanitize_value(v) for k, v in config.items()})
-                
+
                 # Log metrics
                 mlflow.log_metrics(metrics)
-                
-                # Add tags if provided
+
+                # Log configuration as JSON artifact
+                config_path = os.path.join(self.artifact_dir, f"config_{trial_id}.json")
+                with open(config_path, "w") as f:
+                    json.dump(config, f, indent=2)
+                mlflow.log_artifact(config_path)
+
+                # Generate and log QuantStats report if returns are provided
+                if returns is not None and len(returns) > 1:
+                    self._log_quantstats_report(returns, trial_id)
+
+                # Log additional tags if provided
                 if tags:
                     for key, value in tags.items():
                         mlflow.set_tag(key, value)
-                
-                # Log equity curve as artifact if provided
-                if equity_curve:
-                    try:
-                        artifact_path = os.path.join(
-                            self.config.artifact_dir, 
-                            f"equity_curve_{trial_id}_{datetime.now().isoformat()}.json"
-                        )
-                        with open(artifact_path, "w") as f:
-                            json.dump(equity_curve, f, indent=2)
-                        mlflow.log_artifact(artifact_path)
-                    except Exception as artifact_error:
-                        logger.warning(f"Failed to log equity curve artifact: {artifact_error}")
-                
-                # Generate QuantStats report if returns series is provided
-                if self.config.generate_quantstats and returns_series is not None:
-                    try:
-                        # Generate QuantStats HTML report
-                        report_path = os.path.join(
-                            self.config.artifact_dir, 
-                            f"quantstats_report_{trial_id}_{datetime.now().isoformat()}.html"
-                        )
-                        qs.reports.html(returns_series, output=report_path, title=f'Strategy Tearsheet - Trial {trial_id}')
-                        mlflow.log_artifact(report_path)
-                    except Exception as qs_error:
-                        logger.warning(f"Failed to generate QuantStats report: {qs_error}")
-                
-                # Log source code version
-                mlflow.log_param("git_commit", _get_git_commit())
-                
-                # Log timestamp
-                mlflow.log_param("timestamp", datetime.now().isoformat())
+
+                # Log system metadata
+                mlflow.set_tag("timestamp", datetime.now().isoformat())
+                mlflow.set_tag("trial_id", trial_id)
+
+                # Get current run ID
+                run_id = mlflow.active_run().info.run_id
+                logger.info(f"Logged trial {trial_id} to MLflow. Run ID: {run_id}")
+
+                return run_id
+
+            except Exception as e:
+                logger.error(f"Failed to log trial {trial_id}: {e}")
+                raise
+
+    def _log_quantstats_report(self, returns: pd.Series, trial_id: str):
+        """
+        Generate and log QuantStats report.
+
+        Args:
+            returns (pd.Series): Daily returns series
+            trial_id (str): Trial identifier
+        """
+        try:
+            # Ensure returns have a datetime index
+            if not isinstance(returns.index, pd.DatetimeIndex):
+                returns.index = pd.date_range(
+                    start=datetime.now() - pd.Timedelta(days=len(returns)), 
+                    periods=len(returns)
+                )
+
+            # HTML report
+            report_path = os.path.join(self.artifact_dir, f"quantstats_report_{trial_id}.html")
+            qs.reports.html(returns, output=report_path, title=f'Trial {trial_id}')
+            mlflow.log_artifact(report_path)
+
+            # Key QuantStats metrics
+            stats = qs.stats(returns)
+            quantstats_metrics = {
+                "cagr": stats.get("cagr", 0),
+                "max_drawdown": stats.get("max_drawdown", 0),
+                "sharpe": stats.get("sharpe", 0),
+                "sortino": stats.get("sortino", 0),
+                "win_rate": stats.get("win_rate", 0),
+                "profit_factor": stats.get("profit_factor", 0)
+            }
+            mlflow.log_metrics(quantstats_metrics)
 
         except Exception as e:
-            logger.error(f"Failed to log trial {trial_id}: {e}")
-            raise
+            logger.warning(f"Failed to generate QuantStats report: {e}")
 
-def _sanitize_value(value: Any) -> str:
-    """
-    Convert complex values to string for MLflow logging.
-    
-    :param value: Value to sanitize
-    :return: String representation of the value
-    """
-    try:
-        return str(value)
-    except Exception:
-        return repr(value)
+    def get_best_run(
+        self, 
+        metric: str = "sharpe", 
+        mode: str = "max"
+    ) -> Dict[str, Any]:
+        """
+        Retrieve the best run based on a specific metric.
 
-def _get_git_commit() -> str:
-    """
-    Get current git commit hash.
-    
-    :return: Git commit hash or 'unknown'
-    """
-    import subprocess
-    try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
-    except Exception:
-        return "unknown"
+        Args:
+            metric (str): Metric to optimize
+            mode (str): Optimization mode ('max' or 'min')
+
+        Returns:
+            Dict: Details of the best run
+        """
+        client = mlflow.tracking.MlflowClient()
+        experiment = client.get_experiment_by_name("fxorcist-backtests")
+        
+        runs = client.search_runs([experiment.experiment_id])
+        
+        if mode == "max":
+            best_run = max(runs, key=lambda run: run.data.metrics.get(metric, float('-inf')))
+        else:
+            best_run = min(runs, key=lambda run: run.data.metrics.get(metric, float('inf')))
+        
+        return {
+            "run_id": best_run.info.run_id,
+            "params": best_run.data.params,
+            "metrics": best_run.data.metrics
+        }
+
+    def compare_runs(
+        self, 
+        metrics: List[str] = ["sharpe", "max_drawdown", "cagr"]
+    ) -> pd.DataFrame:
+        """
+        Compare multiple runs across specified metrics.
+
+        Args:
+            metrics (List[str]): Metrics to compare
+
+        Returns:
+            pd.DataFrame: Comparison of runs
+        """
+        client = mlflow.tracking.MlflowClient()
+        experiment = client.get_experiment_by_name("fxorcist-backtests")
+        
+        runs = client.search_runs([experiment.experiment_id])
+        
+        comparison_data = []
+        for run in runs:
+            run_data = {
+                "run_id": run.info.run_id,
+                **run.data.params
+            }
+            for metric in metrics:
+                run_data[metric] = run.data.metrics.get(metric, np.nan)
+            
+            comparison_data.append(run_data)
+        
+        return pd.DataFrame(comparison_data)
