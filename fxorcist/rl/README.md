@@ -2,48 +2,109 @@
 
 ## Overview
 
-This module implements a Reinforcement Learning (RL) trading environment and training pipeline using Ray RLlib. The goal is to create an adaptive trading agent that can learn optimal trading policies through trial and error.
+The FXorcist RL module provides an advanced, adaptive trading agent using Reinforcement Learning techniques. It supports multiple RL algorithms and offers a sophisticated trading environment with comprehensive state representation and reward calculation.
 
-## Key Components
+## Key Features
 
-- `env.py`: Gymnasium-compatible trading environment
-- `train.py`: Ray RLlib training script for RL agents
+### Advanced Trading Environment
+- 10-dimensional state space
+- Technical indicators (SMA, RSI)
+- Portfolio metrics
+- Market context features
+- Realistic transaction cost simulation
 
-## Environment Specification
+### Supported RL Algorithms
+- Proximal Policy Optimization (PPO)
+- Soft Actor-Critic (SAC)
 
-### State Space
-- Price
-- RSI (Relative Strength Index)
-- Portfolio Value
-- Current Position Size
+### State Representation
+The state includes:
+1. Technical Indicators
+   - Price to SMA ratio
+   - Relative Strength Index (RSI)
+   - Close price
+   - Short-term Moving Average
+   - Long-term Moving Average
+
+2. Portfolio Metrics
+   - Portfolio return
+   - Position ratio
+   - Trade frequency
+
+3. Market Context
+   - Volatility
+   - Trend strength
 
 ### Action Space
-- 0: Sell
-- 1: Hold
-- 2: Buy
+- Strong Sell
+- Sell
+- Hold
+- Buy
+- Strong Buy
 
-### Reward Function
-The reward is calculated based on:
-- Portfolio value change
-- Small penalty for position changes to discourage unnecessary trading
+## Training Options
 
-## Training
-
-To train an RL agent:
-
+### CLI Training
 ```bash
-fxorcist train-rl --symbol EURUSD --initial-capital 10000 --max-steps 1000 --iterations 100
+# Basic training
+fxorcist train-rl --symbol EURUSD
+
+# Advanced configuration
+fxorcist train-rl \
+    --symbol EURUSD \
+    --initial-capital 10000 \
+    --max-steps 1000 \
+    --iterations 100 \
+    --algorithm ppo \
+    --data-path /path/to/market/data.csv
 ```
 
-## Key Considerations
+### Programmatic Training
+```python
+from fxorcist.rl.train import train_rl
 
-- The environment is a simplified simulation
-- Real-world trading requires more complex state representations
-- Reward function can be customized based on specific trading objectives
+result = train_rl(
+    symbol="EURUSD",
+    initial_capital=10000,
+    max_steps=1000,
+    iterations=100,
+    algorithm="ppo",
+    data_path=None
+)
+```
 
-## Future Improvements
+## Reward Calculation
 
+The reward function considers:
+- Portfolio value change
+- Trade frequency penalty
+- Drawdown management
+- Trend alignment bonus
+
+## Customization
+
+### Extending the Environment
+- Modify `fxorcist/rl/env.py` to add custom indicators
+- Adjust reward calculation in `_calculate_reward()`
+- Add more sophisticated market data loading
+
+## Performance Monitoring
+
+- Tracks episode rewards
+- Monitors trade performance
+- Supports hyperparameter tuning via Population Based Training
+
+## Future Roadmap
 - Multi-asset training
-- More sophisticated state representation
-- Advanced reward functions
-- Integration with live market data
+- More advanced reward functions
+- Enhanced market data integration
+- Support for more RL algorithms
+
+## Dependencies
+- Ray RLlib
+- Gymnasium
+- NumPy
+- Pandas
+
+## Experimental Status
+This module is experimental and under active development. Expect frequent updates and improvements.
