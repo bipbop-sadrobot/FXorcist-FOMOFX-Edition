@@ -263,10 +263,23 @@ class DashboardModule(TradingModule):
     async def _cleanup_cache(self):
         """Clean up expired cache entries."""
         try:
-            # Implement cache cleanup logic
-            pass
+            # Get all cache keys
+            keys = await cache_instance.keys("*")
+            cleaned = 0
+            
+            # Check TTL for each key
+            for key in keys:
+                ttl = await cache_instance.ttl(key)
+                if ttl < 0:  # Expired or no TTL
+                    await cache_instance.delete(key)
+                    cleaned += 1
+                    self.logger.debug(f"Cleaned up expired cache key: {key}")
+            
+            if cleaned > 0:
+                self.logger.info(f"Cleaned up {cleaned} expired cache entries")
+            
         except Exception as e:
-            self.logger.error(f"Cache cleanup error: {e}")
+            self.logger.error(f"Cache cleanup error: {e}", exc_info=True)
     
     async def health_check(self) -> bool:
         """Perform health check.
