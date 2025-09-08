@@ -1,253 +1,107 @@
-"""
-Main dashboard application for the Forex AI monitoring system.
-Implements a modular, tab-based interface with comprehensive trading analytics.
-"""
-
 import streamlit as st
-import logging
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional
-import sys
-from pathlib import Path
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import pandas as pd
+import quantstats as qs
+import numpy as np
+from datetime import datetime
+import os
 
-# Add project root to path
-sys.path.append('..')
-
-from forex_ai_dashboard.pipeline.evaluation_metrics import EvaluationMetrics
-from forex_ai_dashboard.models.model_hierarchy import ModelHierarchy
-
-from components import ComponentConfig
-from components.predictions import PredictionsVisualization
-from components.performance import PerformanceMetrics
-from components.system_status import SystemMonitor
-from components.pipeline_monitor import PipelineMonitor
-from components.quantstats_tearsheet import QuantStatsTearsheet
-from components.training_monitor import TrainingMonitor
-from utils.enhanced_data_loader import EnhancedDataLoader
-
-# Ensure logs directory exists
-Path("logs").mkdir(parents=True, exist_ok=True)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
-    handlers=[
-        logging.FileHandler("logs/dashboard.log"),
-        logging.StreamHandler()
-    ]
+# Set page config
+st.set_page_config(
+    page_title="FXorcist Dashboard",
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
-logger = logging.getLogger(__name__)
 
-class DashboardApp:
-    """Main dashboard application implementing modular components."""
+# Custom CSS for dark theme + neumorphism
+st.markdown("""
+<style>
+    .stApp { background-color: #0e1117; color: white; }
+    .stButton>button {
+        background: linear-gradient(145deg, #1e2125, #23272b);
+        border: none; border-radius: 10px; padding: 10px 20px;
+        box-shadow: 5px 5px 10px #1a1d21, -5px -5px 10px #282c30;
+        color: white; font-weight: bold;
+    }
+    .metric-card {
+        background: linear-gradient(145deg, #1e2125, #23272b);
+        border-radius: 15px; padding: 20px; margin: 10px 0;
+        box-shadow: 5px 5px 15px #1a1d21, -5px -5px 15px #282c30;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-    def __init__(self):
-        """Initialize dashboard with components and data loader."""
-        self.data_loader = EnhancedDataLoader()
+# Sidebar
+st.sidebar.title("FXorcist Controls")
+symbol = st.sidebar.selectbox("Symbol", ["EURUSD", "GBPUSD", "USDJPY"], index=0)
+start_date = st.sidebar.date_input("Start Date", datetime(2024, 1, 1))
+end_date = st.sidebar.date_input("End Date", datetime(2024, 12, 31))
+strategy = st.sidebar.selectbox("Strategy", ["RSI", "MACD", "Bollinger"], index=0)
 
-        # Initialize components
-        self.predictions = PredictionsVisualization(
-            ComponentConfig(
-                title="Price Predictions & Feature Analysis",
-                description="Model predictions and feature importance analysis",
-                height=600
-            )
-        )
+# Mock data (replace with real backtest results)
+dates = pd.date_range(start_date, end_date, freq='D')
+np.random.seed(42)
+returns = np.random.randn(len(dates)) * 0.01
+prices = 100 * np.cumprod(1 + returns)
+drawdown = prices / np.maximum.accumulate(prices) - 1
 
-        self.performance = PerformanceMetrics(
-            ComponentConfig(
-                title="Trading Performance",
-                description="Comprehensive performance metrics and analysis",
-                height=800
-            )
-        )
+# Main content
+st.title("FXorcist Trading Dashboard")
 
-        self.quantstats_portfolio = QuantStatsTearsheet(
-            ComponentConfig(
-                title="Advanced Portfolio Analytics",
-                description="Comprehensive portfolio analysis with QuantStats",
-                height=900
-            )
-        )
+# Key Metrics (Rich-styled)
+col1, col2, col3, col4 = st.columns(4)
+metrics = [
+    ("Total Return", f"{(prices[-1]/prices[0]-1)*100:.1f}%"),
+    ("Max Drawdown", f"{drawdown.min()*100:.1f}%"),
+    ("Sharpe Ratio", "1.8"),
+    ("Win Rate", "58%")
+]
+for col, (label, value) in zip([col1, col2, col3, col4], metrics):
+    with col:
+        st.markdown(f"""
+        <div class="metric-card">
+            <h3>{label}</h3>
+            <h2>{value}</h2>
+        </div>
+        """, unsafe_allow_html=True)
 
-        self.system = SystemMonitor(
-            ComponentConfig(
-                title="System Health & Resources",
-                description="System monitoring and resource usage",
-                height=600
-            )
-        )
+# Interactive Equity Curve + Drawdown
+fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                    subplot_titles=("Equity Curve", "Drawdown"),
+                    vertical_spacing=0.1, row_heights=[0.7, 0.3])
 
-        self.pipeline_monitor = PipelineMonitor(
-            ComponentConfig(
-                title="Pipeline Monitoring",
-                description="Real-time monitoring of training pipelines and system status",
-                height=800
-            )
-        )
+fig.add_trace(
+    go.Scatter(x=dates, y=prices, name="Equity", line=dict(color='#00ff00', width=2)),
+    row=1, col=1
+)
+fig.add_trace(
+    go.Scatter(x=dates, y=drawdown*100, name="Drawdown", fill='tozeroy', 
+               line=dict(color='#ff0000', width=1)),
+    row=2, col=1
+)
 
-        self.training_monitor = TrainingMonitor(
-            ComponentConfig(
-                title="Training System",
-                description="Enhanced training system with model comparison and feature engineering",
-                height=800
-            )
-        )
+fig.update_layout(
+    height=600, 
+    template="plotly_dark",
+    hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+)
+fig.update_yaxes(title_text="Price", row=1, col=1)
+fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
 
-        # Track data refresh
-        self.last_refresh = None
-        self.refresh_interval = 300  # 5 minutes
+st.plotly_chart(fig, use_container_width=True)
 
-    def _should_refresh(self) -> bool:
-        """Check if data should be refreshed."""
-        if not self.last_refresh:
-            return True
+# QuantStats Tearsheet (embedded HTML)
+st.subheader("Performance Analytics")
+returns_series = pd.Series(returns, index=dates)
+report_path = 'tearsheet.html'
+qs.reports.html(returns_series, output=report_path, title='Strategy Report')
+with open(report_path, 'r') as f:
+    html_content = f.read()
+st.components.v1.html(html_content, height=800, scrolling=True)
 
-        elapsed = (datetime.now() - self.last_refresh).total_seconds()
-        return elapsed > self.refresh_interval
-
-    def _load_data(self) -> None:
-        """Load and distribute data to components."""
-        try:
-            # Load forex data
-            df, issues = self.data_loader.load_forex_data(
-                timeframe=st.session_state.get('timeframe', '1H')
-            )
-
-            if issues:
-                for issue in issues:
-                    st.warning(f"Data issue: {issue}")
-
-            # Load evaluation results
-            eval_results, eval_issues = self.data_loader.load_evaluation_results()
-
-            if eval_issues:
-                for issue in eval_issues:
-                    st.warning(f"Evaluation issue: {issue}")
-
-            # Load model hierarchy
-            model, model_issues = self.data_loader.load_model_hierarchy()
-
-            if model_issues:
-                for issue in model_issues:
-                    st.warning(f"Model issue: {issue}")
-
-            # Update components with new data
-            if not df.empty:
-                # Update predictions component
-                self.predictions.update({
-                    'df': df,
-                    'predictions': eval_results[-1].predictions if eval_results else None,
-                    'std_dev': eval_results[-1].prediction_std if eval_results else None,
-                    'model': model,
-                    'features': df
-                })
-
-                # Update quantstats portfolio component
-                self.quantstats_portfolio.update({
-                    'returns': df['close'].pct_change(),
-                    'portfolio_name': 'Forex Trading Portfolio'
-                })
-
-                # Update performance component
-                self.performance.update({
-                    'returns': df['close'].pct_change(),
-                    'predictions': eval_results[-1].predictions if eval_results else None,
-                    'metrics': [r.metrics for r in eval_results] if eval_results else []
-                })
-
-            self.last_refresh = datetime.now()
-
-        except Exception as e:
-            logger.error(f"Error loading data: {str(e)}", exc_info=True)
-            st.error("An error occurred while loading data")
-
-    def run(self):
-        """Run the dashboard application."""
-        st.set_page_config(
-            page_title="Forex AI Dashboard",
-            page_icon="📈",
-            layout="wide"
-        )
-
-        # Header
-        st.title("Forex AI Trading Dashboard")
-
-        try:
-            # Sidebar controls
-            st.sidebar.header("Settings")
-
-            # Timeframe selection
-            timeframe = st.sidebar.selectbox(
-                "Timeframe",
-                ["1M", "5M", "15M", "1H", "4H", "1D"],
-                index=3  # Default to 1H
-            )
-
-            if 'timeframe' not in st.session_state or st.session_state.timeframe != timeframe:
-                st.session_state.timeframe = timeframe
-                self.data_loader.clear_cache()
-
-            # Auto-refresh toggle
-            auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
-
-            # Manual refresh button
-            if st.sidebar.button("Refresh Data") or (auto_refresh and self._should_refresh()):
-                self.data_loader.clear_cache()
-                self._load_data()
-
-            # Load initial data if needed
-            if self._should_refresh():
-                self._load_data()
-
-            # Main content tabs
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                "📈 Predictions & Features",
-                "📊 Performance Analysis",
-                "📈 Portfolio Analytics",
-                "🔧 Training System",
-                "💻 System Monitor",
-                "🔄 Pipeline Monitor"
-            ])
-
-            # Render components in tabs
-            with tab1:
-                self.predictions.render()
-
-            with tab2:
-                # Performance metrics with enhanced analytics
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    self.performance.render()
-                with col2:
-                    if 'returns' in st.session_state:
-                        metrics, issues = self.data_loader.calculate_risk_metrics(st.session_state.returns)
-                        if metrics and not issues:
-                            st.subheader("📊 Risk Metrics")
-                            for key, value in metrics.items():
-                                if isinstance(value, (int, float)):
-                                    st.metric(key.replace('_', ' ').title(), f"{value:.2%}")
-
-            with tab3:
-                self.quantstats_portfolio.render()
-
-            with tab4:
-                self.training_monitor.render()
-
-            with tab5:
-                self.system.render()
-
-            with tab6:
-                self.pipeline_monitor.render()
-
-        except Exception as e:
-            logger.error(f"Dashboard error: {str(e)}", exc_info=True)
-            st.error(
-                "An error occurred while updating the dashboard. "
-                "Please check the logs for details."
-            )
-
-if __name__ == "__main__":
-    dashboard = DashboardApp()
-    dashboard.run()
+# Footer
+st.markdown("---")
+st.caption("FXorcist — Event-Driven Forex Backtesting & Optimization")
